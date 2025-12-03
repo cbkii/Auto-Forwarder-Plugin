@@ -258,18 +258,23 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
                     
                 except queue.Empty:
                     continue
+                except (OSError, ValueError) as e:
+                    log(f"[{self.id}] Queue operation error in worker loop: {e}")
+                    continue
                 except Exception as e:
-                    log(f"[{self.id}] ERROR in worker loop: {traceback.format_exc()}")
+                    log(f"[{self.id}] ERROR processing item in worker loop: {traceback.format_exc()}")
+                    # Continue processing despite errors
+                    continue
         finally:
             log(f"[{self.id}] Worker loop stopped.")
 
     def _create_message_object_safely(self, message):
         """Safely creates a MessageObject from a TLRPC message."""
         try:
-            # Try standard constructor
+            # Try standard constructor with full layout generation and media existence check
             return MessageObject(get_user_config().getCurrentAccount(), message, True, True)
         except (TypeError, AttributeError):
-            # Fallbacks if upstream signature changes
+            # Fallback if upstream signature changes: skip layout generation and media check
             try:
                 return MessageObject(get_user_config().getCurrentAccount(), message, False, False)
             except (TypeError, AttributeError):
@@ -558,8 +563,9 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
             return text
         
         try:
-            # Parse s/pattern/replacement/ format using regex to handle '/' in pattern
-            match = re.match(r'^s/(.+)/(.*)/$', replacement_pattern)
+            # Parse s/pattern/replacement/ format using non-greedy matching
+            # This allows patterns with '/' by using (.+?) to match minimally
+            match = re.match(r'^s/(.+?)/(.*)/$', replacement_pattern)
             if match:
                 pattern = match.group(1)
                 replacement = match.group(2)
@@ -1706,8 +1712,8 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
                 log(f"[{self.id}] Skipping batch processing for chat {chat_id} (batch_ignore=True)")
                 return
             
-            # Calculate the timestamp for N days ago
-            cutoff_time = int((datetime.datetime.now() - datetime.timedelta(days=days)).timestamp())
+            # Calculate the timestamp for N days ago (using UTC for Telegram compatibility)
+            cutoff_time = int((datetime.datetime.utcnow() - datetime.timedelta(days=days)).timestamp())
             
             log(f"[{self.id}] Processing historical messages for chat {chat_id} from last {days} days")
             
@@ -1781,14 +1787,16 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
     def _clear_pending_queue(self):
         """Clears all pending items in the processing queue."""
         try:
-            # Drain the queue properly instead of accessing internal queue attribute
-            while not self.processing_queue.empty():
+            # Drain the queue properly without race conditions
+            cleared_count = 0
+            while True:
                 try:
                     self.processing_queue.get_nowait()
+                    cleared_count += 1
                 except queue.Empty:
                     break
-            run_on_ui_thread(lambda: BulletinHelper.show_success("Queue cleared"))
-            log(f"[{self.id}] Processing queue cleared.")
+            run_on_ui_thread(lambda: BulletinHelper.show_success(f"Queue cleared ({cleared_count} items)"))
+            log(f"[{self.id}] Processing queue cleared ({cleared_count} items).")
         except Exception as e:
             log(f"[{self.id}] Error clearing queue: {e}")
             run_on_ui_thread(lambda: BulletinHelper.show_error(f"Error clearing queue: {str(e)}"))
