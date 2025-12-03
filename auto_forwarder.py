@@ -24,6 +24,16 @@
 # USE ENTIRELY AT YOUR OWN RISK.
 #
 # ----------------------------------------------------------------------------------
+#
+# EXTERAGRAM PLUGIN COMPLIANCE NOTES:
+# This plugin follows exteraGram best practices (https://plugins.exteragram.app/):
+# - Uses run_on_queue() from client_utils for one-off background tasks (batch operations)
+# - Uses daemon thread for persistent queue processor (worker loop)
+# - Separates UI updates via run_on_ui_thread()
+# - Validates context and handles errors gracefully
+# - Compatible with exteraGram 11.9.1+ and Python 3.11 via Chaquopy
+#
+# ----------------------------------------------------------------------------------
 
 # --- Standard Library Imports ---
 import json
@@ -73,7 +83,8 @@ from client_utils import (
     get_account_instance,
     send_request,
     RequestCallback,
-    get_user_config
+    get_user_config,
+    run_on_queue
 )
 
 # --- Plugin Metadata ---
@@ -209,7 +220,11 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
         if account_instance:
             account_instance.getNotificationCenter().addObserver(self, NotificationCenter.didReceiveNewMessages)
         
-        # Start worker thread
+        # Start persistent worker thread for sequential message processing
+        # Note: Using a dedicated daemon thread here instead of run_on_queue because
+        # we need a long-lived, persistent queue processor that runs continuously
+        # throughout the plugin's lifecycle. This aligns with exteraGram best practices
+        # for daemon threads handling supporting background operations.
         worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
         worker_thread.start()
         log(f"[{self.id}] Worker thread started.")
@@ -1764,7 +1779,8 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
                 log(f"[{self.id}] Error in batch unread processing: {traceback.format_exc()}")
                 run_on_ui_thread(lambda: BulletinHelper.show_error(f"Batch processing error: {str(e)}"))
         
-        threading.Thread(target=process_in_background, daemon=True).start()
+        # Use exteraGram's recommended run_on_queue for background tasks
+        run_on_queue(process_in_background)
 
     def _batch_process_all_history(self, days):
         """Processes historical messages for all rules that allow batch processing."""
@@ -1782,7 +1798,8 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
                 log(f"[{self.id}] Error in batch history processing: {traceback.format_exc()}")
                 run_on_ui_thread(lambda: BulletinHelper.show_error(f"Batch processing error: {str(e)}"))
         
-        threading.Thread(target=process_in_background, daemon=True).start()
+        # Use exteraGram's recommended run_on_queue for background tasks
+        run_on_queue(process_in_background)
 
     def _clear_pending_queue(self):
         """Clears all pending items in the processing queue."""
