@@ -34,6 +34,8 @@ import time
 import re
 import queue
 import threading
+import unicodedata
+import datetime
 
 # --- Chaquopy Import for Java Interoperability ---
 from java.chaquopy import dynamic_proxy
@@ -237,39 +239,40 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
     def _worker_loop(self):
         """Worker thread loop that processes items from the queue sequentially."""
         log(f"[{self.id}] Worker loop started.")
-        while not self.stop_worker_thread.is_set():
-            try:
-                item = self.processing_queue.get(timeout=1.0)
-                
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "album":
-                    grouped_id = item[1]
-                    log(f"[{self.id}] Worker processing album: {grouped_id}")
-                    self._process_album(grouped_id)
-                else:
-                    # It's a message object
-                    log(f"[{self.id}] Worker processing message.")
-                    self.super_handle_message_event(item)
-                
-                # Sleep after processing to enforce sequential delay
-                time.sleep(self.sequential_delay_seconds)
-                
-            except queue.Empty:
-                continue
-            except Exception as e:
-                log(f"[{self.id}] ERROR in worker loop: {traceback.format_exc()}")
-        
-        log(f"[{self.id}] Worker loop stopped.")
+        try:
+            while not self.stop_worker_thread.is_set():
+                try:
+                    item = self.processing_queue.get(timeout=1.0)
+                    
+                    if isinstance(item, tuple) and len(item) == 2 and item[0] == "album":
+                        grouped_id = item[1]
+                        log(f"[{self.id}] Worker processing album: {grouped_id}")
+                        self._process_album(grouped_id)
+                    else:
+                        # It's a message object
+                        log(f"[{self.id}] Worker processing message.")
+                        self.super_handle_message_event(item)
+                    
+                    # Sleep after processing to enforce sequential delay
+                    time.sleep(self.sequential_delay_seconds)
+                    
+                except queue.Empty:
+                    continue
+                except Exception as e:
+                    log(f"[{self.id}] ERROR in worker loop: {traceback.format_exc()}")
+        finally:
+            log(f"[{self.id}] Worker loop stopped.")
 
     def _create_message_object_safely(self, message):
         """Safely creates a MessageObject from a TLRPC message."""
         try:
             # Try standard constructor
             return MessageObject(get_user_config().getCurrentAccount(), message, True, True)
-        except:
+        except (TypeError, AttributeError):
             # Fallbacks if upstream signature changes
             try:
                 return MessageObject(get_user_config().getCurrentAccount(), message, False, False)
-            except:
+            except (TypeError, AttributeError):
                 return None
 
     def _is_media_complete(self, message):
@@ -483,7 +486,6 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
         """Normalizes message text using Unicode normalization."""
         if not text:
             return ""
-        import unicodedata
         return unicodedata.normalize("NFKC", text)
 
     def _get_unread_boundary(self, chat_id):
@@ -556,13 +558,12 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
             return text
         
         try:
-            # Parse s/pattern/replacement/ format
-            if replacement_pattern.startswith('s/') and replacement_pattern.count('/') >= 2:
-                parts = replacement_pattern[2:].split('/')
-                if len(parts) >= 2:
-                    pattern = parts[0]
-                    replacement = parts[1]
-                    return re.sub(pattern, replacement, text)
+            # Parse s/pattern/replacement/ format using regex to handle '/' in pattern
+            match = re.match(r'^s/(.+)/(.*)/$', replacement_pattern)
+            if match:
+                pattern = match.group(1)
+                replacement = match.group(2)
+                return re.sub(pattern, replacement, text)
         except Exception as e:
             log(f"[{self.id}] Text replacement error: {e}")
         
@@ -1706,7 +1707,6 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
                 return
             
             # Calculate the timestamp for N days ago
-            import datetime
             cutoff_time = int((datetime.datetime.now() - datetime.timedelta(days=days)).timestamp())
             
             log(f"[{self.id}] Processing historical messages for chat {chat_id} from last {days} days")
@@ -1781,7 +1781,12 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
     def _clear_pending_queue(self):
         """Clears all pending items in the processing queue."""
         try:
-            self.processing_queue.queue.clear()
+            # Drain the queue properly instead of accessing internal queue attribute
+            while not self.processing_queue.empty():
+                try:
+                    self.processing_queue.get_nowait()
+                except queue.Empty:
+                    break
             run_on_ui_thread(lambda: BulletinHelper.show_success("Queue cleared"))
             log(f"[{self.id}] Processing queue cleared.")
         except Exception as e:
