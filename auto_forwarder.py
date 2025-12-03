@@ -92,7 +92,7 @@ __id__ = "auto_forwarder"
 __name__ = "Auto Forwarder"
 __description__ = "Sets up forwarding rules for any chat, including users, groups, and channels."
 __author__ = "@T3SL4"
-__version__ = "1.9.7.1"
+__version__ = "1.6.6.6"
 __min_version__ = "11.9.1"
 __icon__ = "Putin_1337/14"
 
