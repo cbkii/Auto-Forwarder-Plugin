@@ -562,10 +562,14 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
             except Exception as e:
                 log(f"[{self.id}] Regex error: {e}")
         
-        # Evaluate global keyword match if enabled and preset exists
+        # Evaluate global keyword (regex) match if enabled and preset exists
         keyword_match = False
         if use_global_keywords and self.global_keyword_preset:
-            keyword_match = self.global_keyword_preset.lower() in normalized_text.lower()
+            try:
+                # Treat global keyword preset as regex pattern, same as local regex
+                keyword_match = bool(re.search(self.global_keyword_preset, normalized_text))
+            except Exception as e:
+                log(f"[{self.id}] Global keyword regex error: {e}")
         
         # Apply filtering logic based on configuration
         if use_global_keywords and self.global_keyword_preset:
@@ -960,7 +964,7 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
             Input(key="sequential_delay_seconds", text="Sequential Processing Delay (Seconds)", default=str(DEFAULT_SETTINGS["sequential_delay_seconds"]), subtext="Delay between processing items in the worker queue."),
             Divider(),
             Header(text="Global Presets"),
-            Input(key="global_keyword_preset", text="Global Keyword Preset", default="", subtext="Keyword that messages must contain when enabled in rules."),
+            Input(key="global_keyword_preset", text="Global Keyword Preset", default="", subtext="Regex pattern that messages must match when enabled in rules."),
             Input(key="global_blacklist_words", text="Global Blacklist Words", default="", subtext="Comma-separated words to block. Messages containing any will be dropped."),
             Divider(),
             Header(text="Queue Control"),
