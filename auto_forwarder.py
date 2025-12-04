@@ -578,13 +578,38 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
             return text
         
         try:
-            # Parse s/pattern/replacement/ format using non-greedy matching
-            # This allows patterns with '/' by using (.+?) to match minimally
-            match = re.match(r'^s/(.+?)/(.*)/$', replacement_pattern)
-            if match:
-                pattern = match.group(1)
-                replacement = match.group(2)
-                return re.sub(pattern, replacement, text)
+            # Parse s/pattern/replacement/ format
+            # Use a more robust approach: find first unescaped '/' after 's/'
+            # then find the second unescaped '/' to properly handle slashes in replacement
+            if replacement_pattern.startswith('s/'):
+                parts = replacement_pattern[2:]  # Remove 's/'
+                
+                # Find the delimiter between pattern and replacement
+                # Look for the first '/' that isn't escaped
+                pattern_end = -1
+                i = 0
+                while i < len(parts):
+                    if parts[i] == '/' and (i == 0 or parts[i-1] != '\\'):
+                        pattern_end = i
+                        break
+                    i += 1
+                
+                if pattern_end > 0 and pattern_end < len(parts) - 1:
+                    pattern = parts[:pattern_end]
+                    remainder = parts[pattern_end + 1:]
+                    
+                    # Find the closing '/'
+                    replacement_end = -1
+                    i = 0
+                    while i < len(remainder):
+                        if remainder[i] == '/' and (i == 0 or remainder[i-1] != '\\'):
+                            replacement_end = i
+                            break
+                        i += 1
+                    
+                    if replacement_end >= 0:
+                        replacement = remainder[:replacement_end]
+                        return re.sub(pattern, replacement, text)
         except Exception as e:
             log(f"[{self.id}] Text replacement error: {e}")
         
@@ -1682,7 +1707,7 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
             log(f"[{self.id}] ERROR during UI refresh: {traceback.format_exc()}")
 
     def _process_unread_messages(self, chat_id, rule):
-        """Processes unread messages for a specific chat."""
+        """Processes unread messages for a specific chat with pagination."""
         try:
             if rule.get("batch_ignore", False):
                 log(f"[{self.id}] Skipping batch processing for chat {chat_id} (batch_ignore=True)")
@@ -1691,37 +1716,66 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
             boundary_id = self._get_unread_boundary(chat_id)
             log(f"[{self.id}] Processing unread messages for chat {chat_id} after ID {boundary_id}")
             
-            # Request messages from the chat
-            req = TLRPC.TL_messages_getHistory()
-            req.peer = get_messages_controller().getInputPeer(chat_id)
-            req.offset_id = 0
-            req.offset_date = 0
-            req.add_offset = 0
-            req.limit = 100
-            req.max_id = 0
-            req.min_id = boundary_id
-            
-            def on_history_received(response, error):
-                if error or not response:
-                    log(f"[{self.id}] Error fetching history for {chat_id}: {error}")
-                    return
+            # Implement pagination to fetch all unread messages
+            def fetch_batch(offset_id, total_queued):
+                req = TLRPC.TL_messages_getHistory()
+                req.peer = get_messages_controller().getInputPeer(chat_id)
+                req.offset_id = offset_id
+                req.offset_date = 0
+                req.add_offset = 0
+                req.limit = 100  # Max per request
+                req.max_id = 0
+                req.min_id = boundary_id
                 
-                if hasattr(response, 'messages') and response.messages:
-                    for i in range(response.messages.size()):
+                def on_history_received(response, error):
+                    if error or not response:
+                        log(f"[{self.id}] Error fetching history for {chat_id}: {error}")
+                        return
+                    
+                    if not hasattr(response, 'messages') or not response.messages:
+                        log(f"[{self.id}] Completed fetching unread messages for chat {chat_id}. Total: {total_queued}")
+                        return
+                    
+                    messages_size = response.messages.size()
+                    if messages_size == 0:
+                        log(f"[{self.id}] Completed fetching unread messages for chat {chat_id}. Total: {total_queued}")
+                        return
+                    
+                    # Process messages and find the minimum ID for next iteration
+                    min_id_in_batch = None
+                    count = 0
+                    for i in range(messages_size):
                         message = response.messages.get(i)
                         if message.id > boundary_id:
                             message_obj = self._create_message_object_safely(message)
                             if message_obj:
                                 self.processing_queue.put(message_obj)
-                    log(f"[{self.id}] Queued {response.messages.size()} unread messages from chat {chat_id}")
+                                count += 1
+                        
+                        # Track minimum ID for pagination
+                        if min_id_in_batch is None or message.id < min_id_in_batch:
+                            min_id_in_batch = message.id
+                    
+                    new_total = total_queued + count
+                    log(f"[{self.id}] Queued {count} unread messages from chat {chat_id} (batch), total so far: {new_total}")
+                    
+                    # If we got a full batch, there might be more messages
+                    if messages_size >= 100 and min_id_in_batch and min_id_in_batch > boundary_id:
+                        # Fetch next batch using the minimum ID as offset
+                        fetch_batch(min_id_in_batch, new_total)
+                    else:
+                        log(f"[{self.id}] Completed fetching unread messages for chat {chat_id}. Total: {new_total}")
+                
+                send_request(req, RequestCallback(on_history_received))
             
-            send_request(req, RequestCallback(on_history_received))
+            # Start pagination from offset_id = 0 (most recent)
+            fetch_batch(0, 0)
             
         except Exception as e:
             log(f"[{self.id}] Error in _process_unread_messages: {traceback.format_exc()}")
 
     def _process_historical_messages(self, chat_id, rule, days):
-        """Processes historical messages for a specific chat going back N days."""
+        """Processes historical messages for a specific chat going back N days with pagination."""
         try:
             if rule.get("batch_ignore", False):
                 log(f"[{self.id}] Skipping batch processing for chat {chat_id} (batch_ignore=True)")
@@ -1732,33 +1786,73 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
             
             log(f"[{self.id}] Processing historical messages for chat {chat_id} from last {days} days")
             
-            # Request messages from the chat
-            req = TLRPC.TL_messages_getHistory()
-            req.peer = get_messages_controller().getInputPeer(chat_id)
-            req.offset_id = 0
-            req.offset_date = cutoff_time
-            req.add_offset = 0
-            req.limit = 100
-            req.max_id = 0
-            req.min_id = 0
-            
-            def on_history_received(response, error):
-                if error or not response:
-                    log(f"[{self.id}] Error fetching history for {chat_id}: {error}")
-                    return
+            # Implement pagination to fetch all historical messages
+            def fetch_batch(offset_id, total_queued):
+                req = TLRPC.TL_messages_getHistory()
+                req.peer = get_messages_controller().getInputPeer(chat_id)
+                req.offset_id = offset_id
+                req.offset_date = 0  # Use offset_id for pagination, not offset_date
+                req.add_offset = 0
+                req.limit = 100  # Max per request
+                req.max_id = 0
+                req.min_id = 0
                 
-                if hasattr(response, 'messages') and response.messages:
+                def on_history_received(response, error):
+                    if error or not response:
+                        log(f"[{self.id}] Error fetching history for {chat_id}: {error}")
+                        return
+                    
+                    if not hasattr(response, 'messages') or not response.messages:
+                        log(f"[{self.id}] Completed fetching historical messages for chat {chat_id}. Total: {total_queued}")
+                        return
+                    
+                    messages_size = response.messages.size()
+                    if messages_size == 0:
+                        log(f"[{self.id}] Completed fetching historical messages for chat {chat_id}. Total: {total_queued}")
+                        return
+                    
+                    # Process messages and find the minimum ID and oldest date in batch
+                    min_id_in_batch = None
+                    oldest_date_in_batch = None
                     count = 0
-                    for i in range(response.messages.size()):
+                    should_continue = False
+                    
+                    for i in range(messages_size):
                         message = response.messages.get(i)
+                        
+                        # Check if message is within our time range
                         if message.date >= cutoff_time:
                             message_obj = self._create_message_object_safely(message)
                             if message_obj:
                                 self.processing_queue.put(message_obj)
                                 count += 1
-                    log(f"[{self.id}] Queued {count} historical messages from chat {chat_id}")
+                            should_continue = True  # We're still in the valid time range
+                        
+                        # Track minimum ID for pagination
+                        if min_id_in_batch is None or message.id < min_id_in_batch:
+                            min_id_in_batch = message.id
+                        
+                        # Track oldest date
+                        if oldest_date_in_batch is None or message.date < oldest_date_in_batch:
+                            oldest_date_in_batch = message.date
+                    
+                    new_total = total_queued + count
+                    log(f"[{self.id}] Queued {count} historical messages from chat {chat_id} (batch), total so far: {new_total}")
+                    
+                    # Continue pagination if:
+                    # 1. We got a full batch (might be more)
+                    # 2. The oldest message is still within our cutoff time (haven't reached the limit yet)
+                    # 3. We have a valid offset ID
+                    if messages_size >= 100 and should_continue and oldest_date_in_batch and oldest_date_in_batch >= cutoff_time and min_id_in_batch:
+                        # Fetch next batch using the minimum ID as offset
+                        fetch_batch(min_id_in_batch, new_total)
+                    else:
+                        log(f"[{self.id}] Completed fetching historical messages for chat {chat_id}. Total: {new_total}")
+                
+                send_request(req, RequestCallback(on_history_received))
             
-            send_request(req, RequestCallback(on_history_received))
+            # Start pagination from offset_id = 0 (most recent)
+            fetch_batch(0, 0)
             
         except Exception as e:
             log(f"[{self.id}] Error in _process_historical_messages: {traceback.format_exc()}")
