@@ -1774,6 +1774,17 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
         except Exception as e:
             log(f"[{self.id}] Error in _process_unread_messages: {traceback.format_exc()}")
 
+    def _should_fetch_next_batch(self, messages_size, oldest_date_in_batch, cutoff_time, min_id_in_batch):
+        """Determines if we should fetch the next batch of messages during pagination."""
+        # Continue if:
+        # 1. We got a full batch (100 messages means there might be more)
+        # 2. The oldest message in batch is still within our cutoff time (haven't exceeded time range)
+        # 3. We have a valid offset ID to continue from
+        return (messages_size >= 100 and 
+                oldest_date_in_batch is not None and 
+                oldest_date_in_batch >= cutoff_time and 
+                min_id_in_batch is not None)
+
     def _process_historical_messages(self, chat_id, rule, days):
         """Processes historical messages for a specific chat going back N days with pagination."""
         try:
@@ -1815,7 +1826,6 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
                     min_id_in_batch = None
                     oldest_date_in_batch = None
                     count = 0
-                    should_continue = False
                     
                     for i in range(messages_size):
                         message = response.messages.get(i)
@@ -1826,7 +1836,6 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
                             if message_obj:
                                 self.processing_queue.put(message_obj)
                                 count += 1
-                            should_continue = True  # We're still in the valid time range
                         
                         # Track minimum ID for pagination
                         if min_id_in_batch is None or message.id < min_id_in_batch:
@@ -1839,11 +1848,8 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
                     new_total = total_queued + count
                     log(f"[{self.id}] Queued {count} historical messages from chat {chat_id} (batch), total so far: {new_total}")
                     
-                    # Continue pagination if:
-                    # 1. We got a full batch (might be more)
-                    # 2. The oldest message is still within our cutoff time (haven't reached the limit yet)
-                    # 3. We have a valid offset ID
-                    if messages_size >= 100 and should_continue and oldest_date_in_batch and oldest_date_in_batch >= cutoff_time and min_id_in_batch:
+                    # Continue pagination if we should fetch more messages
+                    if self._should_fetch_next_batch(messages_size, oldest_date_in_batch, cutoff_time, min_id_in_batch):
                         # Fetch next batch using the minimum ID as offset
                         fetch_batch(min_id_in_batch, new_total)
                     else:
