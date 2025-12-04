@@ -550,23 +550,33 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
                     log(f"[{self.id}] Message blocked by global blacklist word: {blacklist_word}")
                     return False
         
-        # Check keyword matching if global preset is enabled
+        # Check text filters: local regex and/or global keyword preset
+        local_regex = rule.get("text_filter_regex", "")
         use_global_keywords = rule.get("use_global_keywords", False)
+        
+        # Evaluate local regex match if regex exists
+        regex_match = False
+        if local_regex:
+            try:
+                regex_match = bool(re.search(local_regex, normalized_text))
+            except Exception as e:
+                log(f"[{self.id}] Regex error: {e}")
+        
+        # Evaluate global keyword match if enabled and preset exists
+        keyword_match = False
         if use_global_keywords and self.global_keyword_preset:
-            # Check if message matches global keyword preset OR local regex
-            local_regex = rule.get("text_filter_regex", "")
-            
             keyword_match = self.global_keyword_preset.lower() in normalized_text.lower()
-            regex_match = False
-            
-            if local_regex:
-                try:
-                    regex_match = bool(re.search(local_regex, normalized_text))
-                except Exception as e:
-                    log(f"[{self.id}] Regex error: {e}")
-            
+        
+        # Apply filtering logic based on configuration
+        if use_global_keywords and self.global_keyword_preset:
+            # When global keywords enabled: require (keyword match OR regex match)
             if not (keyword_match or regex_match):
                 log(f"[{self.id}] Message did not match global keyword or local regex.")
+                return False
+        elif local_regex:
+            # When no global keywords: rely solely on local regex if present
+            if not regex_match:
+                log(f"[{self.id}] Message did not match local regex filter.")
                 return False
         
         return True
