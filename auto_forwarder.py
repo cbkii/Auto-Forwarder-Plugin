@@ -88,8 +88,8 @@ from client_utils import (
 )
 
 # --- Plugin Metadata ---
-__id__ = "auto_forwarder"
-__name__ = "Auto Forwarder"
+__id__ = "auto_forwarder_fork"
+__name__ = "Auto Fwd Fork"
 __description__ = "Sets up forwarding rules for any chat, including users, groups, and channels."
 __author__ = "@T3SL4"
 __version__ = "1.6.6.6"
