@@ -321,6 +321,24 @@ class AutoForwarderPlugin(BasePlugin):
         self.reply_context = {}
         log(f"[{self.id}] Worker thread stop signal sent.")
 
+    def _load_setting_with_validation(self, setting_key, converter_func, default_value):
+        """
+        Helper function to load and validate a setting with proper error handling.
+        
+        Args:
+            setting_key: Name of the setting to load
+            converter_func: Function to convert string to desired type (int or float)
+            default_value: Default value to use if conversion fails
+            
+        Returns:
+            Converted setting value or default value on error
+        """
+        try:
+            return converter_func(self.get_setting(setting_key, str(default_value)))
+        except (ValueError, TypeError):
+            log(f"[{self.id}] Invalid {setting_key}, using default: {default_value}")
+            return default_value
+    
     def _load_configurable_settings(self):
         """
         Loads all configurable settings from storage into instance attributes.
@@ -329,48 +347,26 @@ class AutoForwarderPlugin(BasePlugin):
         This prevents crashes from user-entered invalid configuration.
         """
         log(f"[{self.id}] Reloading configurable settings into memory.")
-        try:
-            self.min_msg_length = int(self.get_setting("min_msg_length", str(DEFAULT_SETTINGS["min_msg_length"])))
-        except (ValueError, TypeError):
-            self.min_msg_length = DEFAULT_SETTINGS["min_msg_length"]
-            log(f"[{self.id}] Invalid min_msg_length, using default: {self.min_msg_length}")
         
-        try:
-            self.max_msg_length = int(self.get_setting("max_msg_length", str(DEFAULT_SETTINGS["max_msg_length"])))
-        except (ValueError, TypeError):
-            self.max_msg_length = DEFAULT_SETTINGS["max_msg_length"]
-            log(f"[{self.id}] Invalid max_msg_length, using default: {self.max_msg_length}")
+        # Load integer settings
+        self.min_msg_length = self._load_setting_with_validation(
+            "min_msg_length", int, DEFAULT_SETTINGS["min_msg_length"])
+        self.max_msg_length = self._load_setting_with_validation(
+            "max_msg_length", int, DEFAULT_SETTINGS["max_msg_length"])
+        self.deferral_timeout_ms = self._load_setting_with_validation(
+            "deferral_timeout_ms", int, DEFAULT_SETTINGS["deferral_timeout_ms"])
+        self.album_timeout_ms = self._load_setting_with_validation(
+            "album_timeout_ms", int, DEFAULT_SETTINGS["album_timeout_ms"])
         
-        try:
-            self.deferral_timeout_ms = int(self.get_setting("deferral_timeout_ms", str(DEFAULT_SETTINGS["deferral_timeout_ms"])))
-        except (ValueError, TypeError):
-            self.deferral_timeout_ms = DEFAULT_SETTINGS["deferral_timeout_ms"]
-            log(f"[{self.id}] Invalid deferral_timeout_ms, using default: {self.deferral_timeout_ms}")
+        # Load float settings
+        self.deduplication_window_seconds = self._load_setting_with_validation(
+            "deduplication_window_seconds", float, DEFAULT_SETTINGS["deduplication_window_seconds"])
+        self.antispam_delay_seconds = self._load_setting_with_validation(
+            "antispam_delay_seconds", float, DEFAULT_SETTINGS["antispam_delay_seconds"])
+        self.sequential_delay_seconds = self._load_setting_with_validation(
+            "sequential_delay_seconds", float, DEFAULT_SETTINGS["sequential_delay_seconds"])
         
-        try:
-            self.album_timeout_ms = int(self.get_setting("album_timeout_ms", str(DEFAULT_SETTINGS["album_timeout_ms"])))
-        except (ValueError, TypeError):
-            self.album_timeout_ms = DEFAULT_SETTINGS["album_timeout_ms"]
-            log(f"[{self.id}] Invalid album_timeout_ms, using default: {self.album_timeout_ms}")
-        
-        try:
-            self.deduplication_window_seconds = float(self.get_setting("deduplication_window_seconds", str(DEFAULT_SETTINGS["deduplication_window_seconds"])))
-        except (ValueError, TypeError):
-            self.deduplication_window_seconds = DEFAULT_SETTINGS["deduplication_window_seconds"]
-            log(f"[{self.id}] Invalid deduplication_window_seconds, using default: {self.deduplication_window_seconds}")
-        
-        try:
-            self.antispam_delay_seconds = float(self.get_setting("antispam_delay_seconds", str(DEFAULT_SETTINGS["antispam_delay_seconds"])))
-        except (ValueError, TypeError):
-            self.antispam_delay_seconds = DEFAULT_SETTINGS["antispam_delay_seconds"]
-            log(f"[{self.id}] Invalid antispam_delay_seconds, using default: {self.antispam_delay_seconds}")
-        
-        try:
-            self.sequential_delay_seconds = float(self.get_setting("sequential_delay_seconds", str(DEFAULT_SETTINGS["sequential_delay_seconds"])))
-        except (ValueError, TypeError):
-            self.sequential_delay_seconds = DEFAULT_SETTINGS["sequential_delay_seconds"]
-            log(f"[{self.id}] Invalid sequential_delay_seconds, using default: {self.sequential_delay_seconds}")
-        
+        # Load string settings (no validation needed)
         self.global_keyword_preset = self.get_setting("global_keyword_preset", "")
         self.global_blacklist_words = self.get_setting("global_blacklist_words", "")
 
@@ -868,6 +864,9 @@ class AutoForwarderPlugin(BasePlugin):
         if any(key == event_key for key, ts in self.processed_keys):
             return
         
+        # Mark as processed immediately after deduplication check to prevent race conditions
+        self.processed_keys.append((event_key, current_time))
+        
         if not hasattr(message_object, 'messageOwner'):
             return
             
@@ -895,7 +894,6 @@ class AutoForwarderPlugin(BasePlugin):
             if not self._check_message_text_criteria(message.message, rule):
                 return
 
-        self.processed_keys.append((event_key, time.time()))
         self._send_forwarded_message(message_object, rule)
         
         # Update last seen ID after successful forward
@@ -2290,17 +2288,13 @@ class AutoForwarderPlugin(BasePlugin):
         """
         Clears all pending items in the processing queue.
         
-        Safely drains the queue and reports the count of cleared items.
+        Safely drains the queue using mutex lock for better thread safety and performance.
         """
         try:
-            # Drain the queue properly without race conditions
-            cleared_count = 0
-            while True:
-                try:
-                    self.processing_queue.get_nowait()
-                    cleared_count += 1
-                except queue.Empty:
-                    break
+            # Use mutex lock for thread-safe queue clearing
+            with self.processing_queue.mutex:
+                cleared_count = len(self.processing_queue.queue)
+                self.processing_queue.queue.clear()
             
             run_on_ui_thread(lambda: BulletinHelper.show_success(f"Queue cleared ({cleared_count} items)"))
             log(f"[{self.id}] Processing queue cleared ({cleared_count} items).")
