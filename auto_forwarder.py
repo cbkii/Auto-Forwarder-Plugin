@@ -1891,7 +1891,8 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
                 run_on_ui_thread(lambda: BulletinHelper.show_success(f"Queued unread processing for {count} chats"))
             except Exception as e:
                 log(f"[{self.id}] Error in batch unread processing: {traceback.format_exc()}")
-                run_on_ui_thread(lambda: BulletinHelper.show_error(f"Batch processing error: {str(e)}"))
+                error_msg = f"Batch processing error: {str(e)}"
+                run_on_ui_thread(lambda msg=error_msg: BulletinHelper.show_error(msg))
         
         # Use exteraGram's recommended run_on_queue for background tasks
         run_on_queue(process_in_background)
@@ -1910,7 +1911,8 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
                 run_on_ui_thread(lambda: BulletinHelper.show_success(f"Queued history processing for {count} chats ({days} days)"))
             except Exception as e:
                 log(f"[{self.id}] Error in batch history processing: {traceback.format_exc()}")
-                run_on_ui_thread(lambda: BulletinHelper.show_error(f"Batch processing error: {str(e)}"))
+                error_msg = f"Batch processing error: {str(e)}"
+                run_on_ui_thread(lambda msg=error_msg: BulletinHelper.show_error(msg))
         
         # Use exteraGram's recommended run_on_queue for background tasks
         run_on_queue(process_in_background)
@@ -1930,7 +1932,8 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
             log(f"[{self.id}] Processing queue cleared ({cleared_count} items).")
         except Exception as e:
             log(f"[{self.id}] Error clearing queue: {e}")
-            run_on_ui_thread(lambda: BulletinHelper.show_error(f"Error clearing queue: {str(e)}"))
+            error_msg = f"Error clearing queue: {str(e)}"
+            run_on_ui_thread(lambda msg=error_msg: BulletinHelper.show_error(msg))
 
     def _show_history_days_dialog(self):
         """Shows a dialog to prompt for number of days for historical processing."""
