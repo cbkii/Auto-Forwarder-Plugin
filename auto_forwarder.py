@@ -198,9 +198,17 @@ class AutoForwarderPlugin(BasePlugin):
     class MessageListener(dynamic_proxy(NotificationCenter.NotificationCenterDelegate)):
         """
         A dedicated listener class to handle notifications from NotificationCenter.
+        This class is separated from the main plugin to avoid conflicts between
+        BasePlugin's functionality and Java's dynamic proxy mechanism.
         """
         def __init__(self, plugin_instance):
-            """Initializes the listener with a reference to the main plugin."""
+            """
+            Initializes the listener with a reference to the main plugin.
+            
+            Args:
+                plugin_instance (AutoForwarderPlugin): The parent plugin instance
+                    that owns this listener and handles the actual message forwarding logic.
+            """
             super().__init__()
             self.plugin = plugin_instance
 
