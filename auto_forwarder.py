@@ -259,6 +259,8 @@ class AutoForwarderPlugin(BasePlugin):
                 self.message_listener = self.MessageListener(self)
                 account_instance.getNotificationCenter().addObserver(self.message_listener, NotificationCenter.didReceiveNewMessages)
                 log(f"[{self.id}] Message observer successfully registered.")
+            else:
+                log(f"[{self.id}] WARNING: Failed to register message observer - account_instance is None")
         
         run_on_ui_thread(register_observer)
         
@@ -282,6 +284,10 @@ class AutoForwarderPlugin(BasePlugin):
                 account_instance.getNotificationCenter().removeObserver(self.message_listener, NotificationCenter.didReceiveNewMessages)
                 self.message_listener = None
                 log(f"[{self.id}] Message observer successfully removed.")
+            elif not account_instance:
+                log(f"[{self.id}] WARNING: Cannot unregister observer - account_instance is None")
+            elif not self.message_listener:
+                log(f"[{self.id}] INFO: Observer already unregistered or never registered")
         
         run_on_ui_thread(unregister_observer)
         self.handler.removeCallbacksAndMessages(None)
