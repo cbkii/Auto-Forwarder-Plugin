@@ -92,7 +92,7 @@ __id__ = "auto_forwarder_fork"
 __name__ = "Auto Fwd Fork"
 __description__ = "Sets up forwarding rules for any chat, including users, groups, and channels."
 __author__ = "@T3SL4"
-__version__ = "1.6.6.6"
+__version__ = "1.9.9.9"
 __min_version__ = "11.9.1"
 __icon__ = "msg2_forward"
 
