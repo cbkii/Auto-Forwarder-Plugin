@@ -680,15 +680,15 @@ class AutoForwarderPlugin(BasePlugin):
             text: String to normalize
             
         Returns:
-            str: Unicode NFKC normalized string, or empty string if input is None/empty
+            str: Unicode NFKC normalized string, or empty string if normalization fails
         """
         if not text:
             return ""
         try:
             return unicodedata.normalize("NFKC", text)
         except (TypeError, ValueError) as e:
-            log(f"[{self.id}] Error normalizing text: {e}")
-            return text
+            log(f"[{self.id}] Error normalizing text, returning empty string: {e}")
+            return ""
 
     def _get_unread_boundary(self, chat_id):
         """
@@ -2302,8 +2302,7 @@ class AutoForwarderPlugin(BasePlugin):
                 except queue.Empty:
                     break
             
-            success_msg = f"Queue cleared ({cleared_count} items)"
-            run_on_ui_thread(lambda: BulletinHelper.show_success(success_msg))
+            run_on_ui_thread(lambda: BulletinHelper.show_success(f"Queue cleared ({cleared_count} items)"))
             log(f"[{self.id}] Processing queue cleared ({cleared_count} items).")
         except Exception as e:
             log(f"[{self.id}] Error clearing queue: {e}")
