@@ -184,7 +184,7 @@ class AlbumTask(dynamic_proxy(Runnable)):
         self.plugin._process_album(self.grouped_id)
 
 
-class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDelegate), BasePlugin):
+class AutoForwarderPlugin(BasePlugin):
     """
     The main class for the Auto Forwarder plugin. It handles forwarding rules,
     listens for new messages, and manages the complex logic for forwarding
@@ -193,6 +193,32 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
     TON_ADDRESS = "UQDx2lC9bQW3A4LAfP4lSqtSftQSnLczt87Kn_CIcmJhLicm"
     USDT_ADDRESS = "TXLJNebRRAhwBRKtELMHJPNMtTZYHeoYBo"
     USER_TIMESTAMP_CACHE_SIZE = 500
+
+    # --- Nested MessageListener Class ---
+    class MessageListener(dynamic_proxy(NotificationCenter.NotificationCenterDelegate)):
+        """
+        A dedicated listener class to handle notifications from NotificationCenter.
+        """
+        def __init__(self, plugin_instance):
+            """Initializes the listener with a reference to the main plugin."""
+            super().__init__()
+            self.plugin = plugin_instance
+
+        def didReceivedNotification(self, id, account, args):
+            """The main entry point for all new message notifications."""
+            if id != NotificationCenter.didReceiveNewMessages:
+                return
+            try:
+                if not self.plugin.forwarding_rules:
+                    return
+                messages_list = args[1]
+                for i in range(messages_list.size()):
+                    message_object = messages_list.get(i)
+                    if not (hasattr(message_object, 'messageOwner') and message_object.messageOwner):
+                        continue
+                    self.plugin.handle_message_event(message_object)
+            except Exception:
+                log(f"[{self.plugin.id}] ERROR in notification handler: {traceback.format_exc()}")
 
     def __init__(self):
         super().__init__()
@@ -208,6 +234,7 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
         self.stop_worker_thread = threading.Event()
         self.is_listening_for_reply = False
         self.reply_context = {}
+        self.message_listener = None
         self._load_configurable_settings()
 
     def on_plugin_load(self):
@@ -216,9 +243,16 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
         self._load_configurable_settings()
         self._load_forwarding_rules()
         self._add_chat_menu_item()
-        account_instance = get_account_instance()
-        if account_instance:
-            account_instance.getNotificationCenter().addObserver(self, NotificationCenter.didReceiveNewMessages)
+        
+        # Register the message listener
+        def register_observer():
+            account_instance = get_account_instance()
+            if account_instance:
+                self.message_listener = self.MessageListener(self)
+                account_instance.getNotificationCenter().addObserver(self.message_listener, NotificationCenter.didReceiveNewMessages)
+                log(f"[{self.id}] Message observer successfully registered.")
+        
+        run_on_ui_thread(register_observer)
         
         # Clear stop signal in case plugin is being reloaded
         self.stop_worker_thread.clear()
@@ -234,9 +268,14 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
 
     def on_plugin_unload(self):
         """Called when the plugin is unloaded. Removes the observer and cancels any pending tasks."""
-        account_instance = get_account_instance()
-        if account_instance:
-            account_instance.getNotificationCenter().removeObserver(self, NotificationCenter.didReceiveNewMessages)
+        def unregister_observer():
+            account_instance = get_account_instance()
+            if account_instance and self.message_listener:
+                account_instance.getNotificationCenter().removeObserver(self.message_listener, NotificationCenter.didReceiveNewMessages)
+                self.message_listener = None
+                log(f"[{self.id}] Message observer successfully removed.")
+        
+        run_on_ui_thread(unregister_observer)
         self.handler.removeCallbacksAndMessages(None)
         self.stop_worker_thread.set()
         # Clear reply listener state to avoid stale references
@@ -310,22 +349,6 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
         if hasattr(message.media, 'document') and getattr(message.media.document, 'file_reference', None):
             return True
         return False
-
-    def didReceivedNotification(self, id, account, args):
-        """The main entry point, called by Telegram for every new message event."""
-        if id != NotificationCenter.didReceiveNewMessages:
-            return
-        try:
-            if not self.forwarding_rules:
-                return
-            messages_list = args[1]
-            for i in range(messages_list.size()):
-                message_object = messages_list.get(i)
-                if not (hasattr(message_object, 'messageOwner') and message_object.messageOwner):
-                    continue
-                self.handle_message_event(message_object)
-        except Exception:
-            log(f"[{self.id}] ERROR in notification handler: {traceback.format_exc()}")
 
     def _get_author_type(self, message):
         """Determines if the message is from a user, a bot, or is outgoing."""
