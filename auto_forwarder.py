@@ -516,16 +516,14 @@ class AutoForwarderPlugin(BasePlugin):
                 if not original_message.out and hasattr(get_messages_controller(), 'getMessage'):
                     cached_message_obj = get_messages_controller().getMessage(original_message.dialog_id, original_message.id)
                     if cached_message_obj:
-                        converted_message_object = self._create_message_object_safely(cached_message_obj)
-                        if converted_message_object:
-                            final_message_object = converted_message_object
-                            log(f"[{self.id}] Successfully re-fetched message from cache.")
-                        else:
-                            log(f"[{self.id}] Cached message conversion failed; using original object.")
+                        final_message_object = cached_message_obj
+                        log(f"[{self.id}] Successfully re-fetched message from cache.")
             except Exception as e:
                 log(f"[{self.id}] Could not re-fetch message from cache, proceeding with original object. Error: {e}")
-            self._process_and_send(final_message_object, event_key)
-            del self.deferred_messages[event_key]
+            try:
+                self._process_and_send(final_message_object, event_key)
+            finally:
+                del self.deferred_messages[event_key]
 
     def _process_album(self, grouped_id):
         """Processes a buffered album after the timeout."""
