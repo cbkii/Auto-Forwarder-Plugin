@@ -213,22 +213,46 @@ class AutoForwarderPlugin(BasePlugin):
             self.plugin = plugin_instance
 
         def didReceivedNotification(self, id, account, args):
-            """The main entry point for all new message notifications."""
+            """
+            The main entry point for all new message notifications.
+            
+            Args:
+                id: Notification type identifier
+                account: Account instance
+                args: Arguments array containing message list
+            """
             if id != NotificationCenter.didReceiveNewMessages:
                 return
             try:
                 if not self.plugin.forwarding_rules:
                     return
+                
+                # Validate args structure
+                if not args or len(args) < 2:
+                    log(f"[{self.plugin.id}] Invalid args structure in notification")
+                    return
+                
                 messages_list = args[1]
+                if not messages_list:
+                    return
+                
+                # Process each message in the list
                 for i in range(messages_list.size()):
                     message_object = messages_list.get(i)
+                    if not message_object:
+                        continue
                     if not (hasattr(message_object, 'messageOwner') and message_object.messageOwner):
                         continue
                     self.plugin.handle_message_event(message_object)
+            except IndexError as e:
+                log(f"[{self.plugin.id}] Index error in notification handler: {e}")
+            except AttributeError as e:
+                log(f"[{self.plugin.id}] Attribute error in notification handler: {e}")
             except Exception:
                 log(f"[{self.plugin.id}] ERROR in notification handler: {traceback.format_exc()}")
 
     def __init__(self):
+        """Initializes the AutoForwarderPlugin with default state and configuration."""
         super().__init__()
         self.id = __id__
         self.forwarding_rules = {}
@@ -298,15 +322,55 @@ class AutoForwarderPlugin(BasePlugin):
         log(f"[{self.id}] Worker thread stop signal sent.")
 
     def _load_configurable_settings(self):
-        """Loads all configurable settings from storage into instance attributes."""
+        """
+        Loads all configurable settings from storage into instance attributes.
+        
+        Validates numeric inputs and falls back to defaults if invalid values are provided.
+        This prevents crashes from user-entered invalid configuration.
+        """
         log(f"[{self.id}] Reloading configurable settings into memory.")
-        self.min_msg_length = int(self.get_setting("min_msg_length", str(DEFAULT_SETTINGS["min_msg_length"])))
-        self.max_msg_length = int(self.get_setting("max_msg_length", str(DEFAULT_SETTINGS["max_msg_length"])))
-        self.deferral_timeout_ms = int(self.get_setting("deferral_timeout_ms", str(DEFAULT_SETTINGS["deferral_timeout_ms"])))
-        self.album_timeout_ms = int(self.get_setting("album_timeout_ms", str(DEFAULT_SETTINGS["album_timeout_ms"])))
-        self.deduplication_window_seconds = float(self.get_setting("deduplication_window_seconds", str(DEFAULT_SETTINGS["deduplication_window_seconds"])))
-        self.antispam_delay_seconds = float(self.get_setting("antispam_delay_seconds", str(DEFAULT_SETTINGS["antispam_delay_seconds"])))
-        self.sequential_delay_seconds = float(self.get_setting("sequential_delay_seconds", str(DEFAULT_SETTINGS["sequential_delay_seconds"])))
+        try:
+            self.min_msg_length = int(self.get_setting("min_msg_length", str(DEFAULT_SETTINGS["min_msg_length"])))
+        except (ValueError, TypeError):
+            self.min_msg_length = DEFAULT_SETTINGS["min_msg_length"]
+            log(f"[{self.id}] Invalid min_msg_length, using default: {self.min_msg_length}")
+        
+        try:
+            self.max_msg_length = int(self.get_setting("max_msg_length", str(DEFAULT_SETTINGS["max_msg_length"])))
+        except (ValueError, TypeError):
+            self.max_msg_length = DEFAULT_SETTINGS["max_msg_length"]
+            log(f"[{self.id}] Invalid max_msg_length, using default: {self.max_msg_length}")
+        
+        try:
+            self.deferral_timeout_ms = int(self.get_setting("deferral_timeout_ms", str(DEFAULT_SETTINGS["deferral_timeout_ms"])))
+        except (ValueError, TypeError):
+            self.deferral_timeout_ms = DEFAULT_SETTINGS["deferral_timeout_ms"]
+            log(f"[{self.id}] Invalid deferral_timeout_ms, using default: {self.deferral_timeout_ms}")
+        
+        try:
+            self.album_timeout_ms = int(self.get_setting("album_timeout_ms", str(DEFAULT_SETTINGS["album_timeout_ms"])))
+        except (ValueError, TypeError):
+            self.album_timeout_ms = DEFAULT_SETTINGS["album_timeout_ms"]
+            log(f"[{self.id}] Invalid album_timeout_ms, using default: {self.album_timeout_ms}")
+        
+        try:
+            self.deduplication_window_seconds = float(self.get_setting("deduplication_window_seconds", str(DEFAULT_SETTINGS["deduplication_window_seconds"])))
+        except (ValueError, TypeError):
+            self.deduplication_window_seconds = DEFAULT_SETTINGS["deduplication_window_seconds"]
+            log(f"[{self.id}] Invalid deduplication_window_seconds, using default: {self.deduplication_window_seconds}")
+        
+        try:
+            self.antispam_delay_seconds = float(self.get_setting("antispam_delay_seconds", str(DEFAULT_SETTINGS["antispam_delay_seconds"])))
+        except (ValueError, TypeError):
+            self.antispam_delay_seconds = DEFAULT_SETTINGS["antispam_delay_seconds"]
+            log(f"[{self.id}] Invalid antispam_delay_seconds, using default: {self.antispam_delay_seconds}")
+        
+        try:
+            self.sequential_delay_seconds = float(self.get_setting("sequential_delay_seconds", str(DEFAULT_SETTINGS["sequential_delay_seconds"])))
+        except (ValueError, TypeError):
+            self.sequential_delay_seconds = DEFAULT_SETTINGS["sequential_delay_seconds"]
+            log(f"[{self.id}] Invalid sequential_delay_seconds, using default: {self.sequential_delay_seconds}")
+        
         self.global_keyword_preset = self.get_setting("global_keyword_preset", "")
         self.global_blacklist_words = self.get_setting("global_blacklist_words", "")
 
@@ -343,19 +407,45 @@ class AutoForwarderPlugin(BasePlugin):
             log(f"[{self.id}] Worker loop stopped.")
 
     def _create_message_object_safely(self, message):
-        """Safely creates a MessageObject from a TLRPC message."""
+        """
+        Safely creates a MessageObject from a TLRPC message.
+        
+        Args:
+            message: TLRPC message object to wrap
+            
+        Returns:
+            MessageObject instance if successful, None otherwise
+            
+        Note:
+            Uses fallback strategy if the MessageObject constructor signature changes
+            in future exteraGram versions.
+        """
+        if not message:
+            return None
+            
         try:
             # Try standard constructor with full layout generation and media existence check
             return MessageObject(get_user_config().getCurrentAccount(), message, True, True)
-        except (TypeError, AttributeError):
+        except (TypeError, AttributeError) as e:
+            log(f"[{self.id}] Primary MessageObject creation failed: {e}")
             # Fallback if upstream signature changes: skip layout generation and media check
             try:
                 return MessageObject(get_user_config().getCurrentAccount(), message, False, False)
-            except (TypeError, AttributeError):
+            except (TypeError, AttributeError) as e:
+                log(f"[{self.id}] Fallback MessageObject creation failed: {e}")
                 return None
 
     def _is_media_complete(self, message):
-        """Checks if a media message has a file_reference, which is needed for forwarding."""
+        """
+        Checks if a media message has a file_reference, which is needed for forwarding.
+        
+        Args:
+            message: TLRPC message object to check
+            
+        Returns:
+            bool: True if message has no media or media has complete file_reference,
+                  False if media is present but incomplete
+        """
         if not message or not hasattr(message, 'media') or not message.media:
             return True
         if hasattr(message.media, 'photo') and getattr(message.media.photo, 'file_reference', None):
@@ -365,7 +455,18 @@ class AutoForwarderPlugin(BasePlugin):
         return False
 
     def _get_author_type(self, message):
-        """Determines if the message is from a user, a bot, or is outgoing."""
+        """
+        Determines if the message is from a user, a bot, or is outgoing.
+        
+        Args:
+            message: TLRPC message object
+            
+        Returns:
+            str: "outgoing" if sent by current user, "bot" if from a bot, "user" otherwise
+        """
+        if not message:
+            return "user"
+            
         if message.out:
             return "outgoing"
         
@@ -376,8 +477,19 @@ class AutoForwarderPlugin(BasePlugin):
         return "user"
 
     def handle_message_event(self, message_object):
-        """Event triage - checks if rule exists and queues messages for processing."""
+        """
+        Event triage - checks if rule exists and queues messages for processing.
+        
+        Args:
+            message_object: MessageObject instance to process
+        """
+        if not message_object or not hasattr(message_object, 'messageOwner'):
+            return
+            
         message = message_object.messageOwner
+        if not message:
+            return
+            
         source_chat_id = self._get_id_from_peer(message.peer_id)
         
         # Check if listening for reply to set destination
@@ -422,9 +534,23 @@ class AutoForwarderPlugin(BasePlugin):
         self.processing_queue.put(message_object)
 
     def super_handle_message_event(self, message_object):
-        """Main processing pipeline for each incoming message (called by worker)."""
+        """
+        Main processing pipeline for each incoming message (called by worker).
+        
+        Args:
+            message_object: MessageObject instance to process through the forwarding pipeline
+        """
+        if not message_object or not hasattr(message_object, 'messageOwner'):
+            return
+            
         message = message_object.messageOwner
+        if not message:
+            return
+            
         source_chat_id = self._get_id_from_peer(message.peer_id)
+        if not source_chat_id:
+            return
+            
         rule = self.forwarding_rules.get(source_chat_id)
         if not rule or not rule.get("enabled", False):
             return
@@ -547,13 +673,33 @@ class AutoForwarderPlugin(BasePlugin):
         self._send_album(album_data['messages'], rule)
 
     def _normalize_message_text(self, text):
-        """Normalizes message text using Unicode normalization."""
+        """
+        Normalizes message text using Unicode normalization.
+        
+        Args:
+            text: String to normalize
+            
+        Returns:
+            str: Unicode NFKC normalized string, or empty string if input is None/empty
+        """
         if not text:
             return ""
-        return unicodedata.normalize("NFKC", text)
+        try:
+            return unicodedata.normalize("NFKC", text)
+        except (TypeError, ValueError) as e:
+            log(f"[{self.id}] Error normalizing text: {e}")
+            return text
 
     def _get_unread_boundary(self, chat_id):
-        """Retrieves the maximum of the Telegram-tracked read ID and plugin's internal last_seen_inbox_id."""
+        """
+        Retrieves the maximum of the Telegram-tracked read ID and plugin's internal last_seen_inbox_id.
+        
+        Args:
+            chat_id: Numeric chat identifier
+            
+        Returns:
+            int: Message ID representing the boundary of unread messages, or 0 on error
+        """
         try:
             # Get Telegram's read position
             dialog = get_messages_controller().getDialog(chat_id)
@@ -564,18 +710,32 @@ class AutoForwarderPlugin(BasePlugin):
             internal_read_id = int(self.get_setting(internal_tracking_key, "0"))
             
             return max(telegram_read_id, internal_read_id)
+        except (ValueError, TypeError) as e:
+            log(f"[{self.id}] Error parsing unread boundary values: {e}")
+            return 0
         except Exception as e:
             log(f"[{self.id}] Error getting unread boundary: {e}")
             return 0
 
     def _update_last_seen_id(self, chat_id, message_id):
-        """Updates the internal storage for the chat's last processed ID."""
+        """
+        Updates the internal storage for the chat's last processed ID.
+        
+        Args:
+            chat_id: Numeric chat identifier
+            message_id: Message ID to store as last seen
+        """
+        if not chat_id or not message_id:
+            return
+            
         try:
             internal_tracking_key = f"last_seen_{chat_id}"
             current_max = int(self.get_setting(internal_tracking_key, "0"))
             if message_id > current_max:
                 self.set_setting(internal_tracking_key, str(message_id))
                 log(f"[{self.id}] Updated last_seen_id for chat {chat_id} to {message_id}")
+        except (ValueError, TypeError) as e:
+            log(f"[{self.id}] Error parsing last_seen_id values: {e}")
         except Exception as e:
             log(f"[{self.id}] Error updating last_seen_id: {e}")
 
@@ -689,15 +849,36 @@ class AutoForwarderPlugin(BasePlugin):
         return filters.get("text", True)
 
     def _process_and_send(self, message_object, event_key):
-        """Final processing stage that applies all filters and sends the message."""
+        """
+        Final processing stage that applies all filters and sends the message.
+        
+        Args:
+            message_object: MessageObject to process
+            event_key: Unique key for deduplication tracking
+        """
+        if not message_object or not event_key:
+            return
+            
         current_time = time.time()
+        # Clean up old processed keys beyond deduplication window
         while self.processed_keys and current_time - self.processed_keys[0][1] > self.deduplication_window_seconds:
             self.processed_keys.popleft()
+        
+        # Check if already processed
         if any(key == event_key for key, ts in self.processed_keys):
             return
         
+        if not hasattr(message_object, 'messageOwner'):
+            return
+            
         message = message_object.messageOwner
+        if not message:
+            return
+            
         source_chat_id = self._get_id_from_peer(message.peer_id)
+        if not source_chat_id:
+            return
+            
         rule = self.forwarding_rules.get(source_chat_id)
         if not rule:
             return
@@ -814,11 +995,22 @@ class AutoForwarderPlugin(BasePlugin):
         return quote_text, entities
 
     def _send_album(self, message_objects, rule):
-        """Constructs and sends an album, filtering each item and attaching a header/quote to the first."""
-        if not message_objects:
+        """
+        Constructs and sends an album, filtering each item and attaching a header/quote to the first.
+        
+        Args:
+            message_objects: List of MessageObject instances in the album
+            rule: Forwarding rule configuration dict
+        """
+        if not message_objects or not rule:
             return
         
-        to_peer_id = rule["destination"]
+        # Validate destination
+        to_peer_id = rule.get("destination")
+        if not to_peer_id:
+            log(f"[{self.id}] Cannot send album: missing destination in rule")
+            return
+            
         drop_author = rule.get("drop_author", True)
         quote_replies = rule.get("quote_replies", True)
         filters = rule.get("filters", {})
@@ -907,11 +1099,29 @@ class AutoForwarderPlugin(BasePlugin):
             log(f"[{self.id}] ERROR in _send_album: {traceback.format_exc()}")
 
     def _send_forwarded_message(self, message_object, rule):
-        """Constructs and sends a single message."""
-        message = message_object.messageOwner
-        if not message: return
+        """
+        Constructs and sends a single message.
         
-        to_peer_id = rule["destination"]
+        Args:
+            message_object: MessageObject to forward
+            rule: Forwarding rule configuration dict
+        """
+        if not message_object or not rule:
+            return
+            
+        if not hasattr(message_object, 'messageOwner'):
+            return
+            
+        message = message_object.messageOwner
+        if not message: 
+            return
+        
+        # Validate destination
+        to_peer_id = rule.get("destination")
+        if not to_peer_id:
+            log(f"[{self.id}] Cannot send message: missing destination in rule")
+            return
+            
         drop_author = rule.get("drop_author", True)
         quote_replies = rule.get("quote_replies", True)
         filters = rule.get("filters", {})
@@ -1117,24 +1327,65 @@ class AutoForwarderPlugin(BasePlugin):
             log(f"[{self.id}] ERROR showing FAQ dialog: {traceback.format_exc()}")
 
     def _load_forwarding_rules(self):
-        """Loads forwarding rules from persistent storage."""
+        """
+        Loads forwarding rules from persistent storage.
+        
+        Falls back to empty dict if rules cannot be loaded or parsed.
+        """
         try:
             rules_str = self.get_setting(FORWARDING_RULES_KEY, "{}")
             self.forwarding_rules = {int(k): v for k, v in json.loads(rules_str).items()}
-        except Exception:
+            log(f"[{self.id}] Loaded {len(self.forwarding_rules)} forwarding rules.")
+        except json.JSONDecodeError as e:
+            log(f"[{self.id}] JSON parsing error loading rules: {e}")
+            self.forwarding_rules = {}
+        except (ValueError, TypeError) as e:
+            log(f"[{self.id}] Error converting rule keys to integers: {e}")
+            self.forwarding_rules = {}
+        except Exception as e:
+            log(f"[{self.id}] Unexpected error loading rules: {e}")
             self.forwarding_rules = {}
 
     def _save_forwarding_rules(self):
-        """Saves the current forwarding rules to persistent storage."""
-        self.set_setting(FORWARDING_RULES_KEY, json.dumps({str(k): v for k, v in self.forwarding_rules.items()}))
-        self._load_forwarding_rules()
+        """
+        Saves the current forwarding rules to persistent storage.
+        
+        Converts integer keys to strings for JSON compatibility and reloads rules
+        to ensure consistency.
+        """
+        try:
+            rules_json = json.dumps({str(k): v for k, v in self.forwarding_rules.items()})
+            self.set_setting(FORWARDING_RULES_KEY, rules_json)
+            self._load_forwarding_rules()
+            log(f"[{self.id}] Successfully saved {len(self.forwarding_rules)} forwarding rules.")
+        except (TypeError, ValueError) as e:
+            log(f"[{self.id}] Error serializing rules to JSON: {e}")
+        except Exception as e:
+            log(f"[{self.id}] Unexpected error saving rules: {e}")
 
     def _copy_to_clipboard(self, text_to_copy: str, label: str):
-        """Copies text to the clipboard and shows a toast notification."""
+        """
+        Copies text to the clipboard and shows a toast notification.
+        
+        Args:
+            text_to_copy: String content to copy
+            label: Label for the clipboard entry and toast message
+        """
+        if not text_to_copy:
+            log(f"[{self.id}] Cannot copy empty text to clipboard")
+            return
+            
         activity = get_last_fragment().getParentActivity()
-        if not activity: return
+        if not activity: 
+            log(f"[{self.id}] No activity available for clipboard operation")
+            return
+            
         try:
             clipboard = activity.getSystemService(Context.CLIPBOARD_SERVICE)
+            if not clipboard:
+                log(f"[{self.id}] Could not access clipboard service")
+                return
+                
             clip = ClipData.newPlainText(label, text_to_copy)
             clipboard.setPrimaryClip(clip)
             Toast.makeText(activity, f"{label} address copied to clipboard!", Toast.LENGTH_SHORT).show()
@@ -1142,11 +1393,26 @@ class AutoForwarderPlugin(BasePlugin):
             log(f"[{self.id}] Failed to copy to clipboard: {traceback.format_exc()}")
 
     def _get_id_from_peer(self, peer):
-        """Extracts a standard numerical ID from a TLRPC Peer object."""
-        if not peer: return 0
-        if isinstance(peer, TLRPC.TL_peerChannel): return -peer.channel_id
-        if isinstance(peer, TLRPC.TL_peerChat): return -peer.chat_id
-        if isinstance(peer, TLRPC.TL_peerUser): return peer.user_id
+        """
+        Extracts a standard numerical ID from a TLRPC Peer object.
+        
+        Args:
+            peer: TLRPC Peer object (TL_peerChannel, TL_peerChat, or TL_peerUser)
+            
+        Returns:
+            int: Extracted ID (negative for channels/chats, positive for users), or 0 if invalid
+        """
+        if not peer: 
+            return 0
+        try:
+            if isinstance(peer, TLRPC.TL_peerChannel): 
+                return -peer.channel_id
+            if isinstance(peer, TLRPC.TL_peerChat): 
+                return -peer.chat_id
+            if isinstance(peer, TLRPC.TL_peerUser): 
+                return peer.user_id
+        except (AttributeError, TypeError) as e:
+            log(f"[{self.id}] Error extracting ID from peer: {e}")
         return 0
 
     def _get_id_for_storage(self, entity):
@@ -1175,20 +1441,56 @@ class AutoForwarderPlugin(BasePlugin):
         return abs(input_id)
 
     def _get_chat_entity(self, dialog_id):
-        """A robust way to get a chat entity from a dialog_id."""
+        """
+        A robust way to get a chat entity from a dialog_id.
+        
+        Args:
+            dialog_id: Numeric or string dialog/chat identifier
+            
+        Returns:
+            TLRPC entity (User or Chat) if found, None otherwise
+        """
         if not isinstance(dialog_id, int):
-            try: dialog_id = int(dialog_id)
-            except (ValueError, TypeError): return None
-        return get_messages_controller().getUser(dialog_id) if dialog_id > 0 else get_messages_controller().getChat(abs(dialog_id))
+            try: 
+                dialog_id = int(dialog_id)
+            except (ValueError, TypeError): 
+                return None
+        
+        if dialog_id == 0:
+            return None
+            
+        try:
+            if dialog_id > 0:
+                return get_messages_controller().getUser(dialog_id)
+            else:
+                return get_messages_controller().getChat(abs(dialog_id))
+        except Exception as e:
+            log(f"[{self.id}] Error getting chat entity for ID {dialog_id}: {e}")
+            return None
 
     def _get_entity_name(self, entity):
-        """Gets a display-friendly name for a user, chat, or channel entity."""
-        if not entity: return "Unknown"
-        if hasattr(entity, 'title'): return entity.title
-        if hasattr(entity, 'first_name'):
-            name = f"{entity.first_name or ''} {entity.last_name or ''}".strip()
-            return name if name else f"ID: {entity.id}"
-        return f"ID: {getattr(entity, 'id', 'N/A')}"
+        """
+        Gets a display-friendly name for a user, chat, or channel entity.
+        
+        Args:
+            entity: TLRPC User or Chat object
+            
+        Returns:
+            str: Display name or ID-based fallback
+        """
+        if not entity: 
+            return "Unknown"
+        
+        try:
+            if hasattr(entity, 'title'): 
+                return entity.title
+            if hasattr(entity, 'first_name'):
+                name = f"{entity.first_name or ''} {entity.last_name or ''}".strip()
+                return name if name else f"ID: {entity.id}"
+            return f"ID: {getattr(entity, 'id', 'N/A')}"
+        except (AttributeError, TypeError) as e:
+            log(f"[{self.id}] Error getting entity name: {e}")
+            return "Unknown"
 
     def _get_entity_tag(self, entity):
         """Gets an @username tag or falls back to the entity name."""
@@ -1765,7 +2067,16 @@ class AutoForwarderPlugin(BasePlugin):
             log(f"[{self.id}] ERROR during UI refresh: {traceback.format_exc()}")
 
     def _process_unread_messages(self, chat_id, rule):
-        """Processes unread messages for a specific chat with pagination."""
+        """
+        Processes unread messages for a specific chat with pagination.
+        
+        Args:
+            chat_id: Numeric chat identifier
+            rule: Forwarding rule configuration dict
+        """
+        if not chat_id or not rule:
+            return
+            
         try:
             if rule.get("batch_ignore", False):
                 log(f"[{self.id}] Skipping batch processing for chat {chat_id} (batch_ignore=True)")
@@ -1844,7 +2155,21 @@ class AutoForwarderPlugin(BasePlugin):
                 min_id_in_batch is not None)
 
     def _process_historical_messages(self, chat_id, rule, days):
-        """Processes historical messages for a specific chat going back N days with pagination."""
+        """
+        Processes historical messages for a specific chat going back N days with pagination.
+        
+        Args:
+            chat_id: Numeric chat identifier
+            rule: Forwarding rule configuration dict
+            days: Number of days to look back
+        """
+        if not chat_id or not rule:
+            return
+            
+        if not isinstance(days, (int, float)) or days <= 0:
+            log(f"[{self.id}] Invalid days value: {days}")
+            return
+            
         try:
             if rule.get("batch_ignore", False):
                 log(f"[{self.id}] Skipping batch processing for chat {chat_id} (batch_ignore=True)")
@@ -1962,7 +2287,11 @@ class AutoForwarderPlugin(BasePlugin):
         run_on_queue(process_in_background)
 
     def _clear_pending_queue(self):
-        """Clears all pending items in the processing queue."""
+        """
+        Clears all pending items in the processing queue.
+        
+        Safely drains the queue and reports the count of cleared items.
+        """
         try:
             # Drain the queue properly without race conditions
             cleared_count = 0
@@ -1972,7 +2301,9 @@ class AutoForwarderPlugin(BasePlugin):
                     cleared_count += 1
                 except queue.Empty:
                     break
-            run_on_ui_thread(lambda: BulletinHelper.show_success(f"Queue cleared ({cleared_count} items)"))
+            
+            success_msg = f"Queue cleared ({cleared_count} items)"
+            run_on_ui_thread(lambda: BulletinHelper.show_success(success_msg))
             log(f"[{self.id}] Processing queue cleared ({cleared_count} items).")
         except Exception as e:
             log(f"[{self.id}] Error clearing queue: {e}")
