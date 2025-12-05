@@ -220,6 +220,9 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
         if account_instance:
             account_instance.getNotificationCenter().addObserver(self, NotificationCenter.didReceiveNewMessages)
         
+        # Clear stop signal in case plugin is being reloaded
+        self.stop_worker_thread.clear()
+        
         # Start persistent worker thread for sequential message processing
         # Note: Using a dedicated daemon thread here instead of run_on_queue because
         # we need a long-lived, persistent queue processor that runs continuously
@@ -236,6 +239,9 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
             account_instance.getNotificationCenter().removeObserver(self, NotificationCenter.didReceiveNewMessages)
         self.handler.removeCallbacksAndMessages(None)
         self.stop_worker_thread.set()
+        # Clear reply listener state to avoid stale references
+        self.is_listening_for_reply = False
+        self.reply_context = {}
         log(f"[{self.id}] Worker thread stop signal sent.")
 
     def _load_configurable_settings(self):
@@ -346,6 +352,7 @@ class AutoForwarderPlugin(dynamic_proxy(NotificationCenter.NotificationCenterDel
                 if context and 'source_id' in context:
                     log(f"[{self.id}] Setting destination by reply: {dest_chat_id}")
                     self.is_listening_for_reply = False
+                    self.reply_context = {}
                     dest_name = self._get_chat_name(dest_chat_id)
                     
                     # Update the input field if available
