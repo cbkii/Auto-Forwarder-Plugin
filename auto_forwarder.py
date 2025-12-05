@@ -94,7 +94,7 @@ __description__ = "Sets up forwarding rules for any chat, including users, group
 __author__ = "@T3SL4"
 __version__ = "1.6.6.6"
 __min_version__ = "11.9.1"
-__icon__ = "SendBoost/2"
+__icon__ = "msg2_forward"
 
 # --- Constants & Default Settings ---
 FORWARDING_RULES_KEY = "forwarding_rules_v1337"
