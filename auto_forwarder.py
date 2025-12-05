@@ -642,8 +642,10 @@ class AutoForwarderPlugin(BasePlugin):
                         log(f"[{self.id}] Successfully re-fetched message from cache.")
             except Exception as e:
                 log(f"[{self.id}] Could not re-fetch message from cache, proceeding with original object. Error: {e}")
-            self._process_and_send(final_message_object, event_key)
-            del self.deferred_messages[event_key]
+            try:
+                self._process_and_send(final_message_object, event_key)
+            finally:
+                del self.deferred_messages[event_key]
 
     def _process_album(self, grouped_id):
         """Processes a buffered album after the timeout."""
