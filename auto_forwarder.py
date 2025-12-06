@@ -42,8 +42,9 @@ import random
 import collections
 import time
 import re
-import queue
+import os
 import threading
+import queue
 import unicodedata
 import datetime
 
@@ -58,25 +59,27 @@ from ui.bulletin import BulletinHelper
 
 # --- Android & Chaquopy Imports ---
 from android_utils import log, run_on_ui_thread
-from android.widget import EditText, FrameLayout, CheckBox, LinearLayout, TextView, Toast, ScrollView
+from android.widget import EditText, FrameLayout, CheckBox, LinearLayout, TextView, Toast, ScrollView, CompoundButton
 from android.text import InputType, Html
 from android.text.method import LinkMovementMethod
 from android.util import TypedValue
 from android.view import View, ViewGroup
-from java.util import ArrayList, HashSet
+from java.util import ArrayList, HashSet, Scanner
 from android.content.res import ColorStateList
-from android.content import ClipData, ClipboardManager, Context
+from android.content import ClipData, ClipboardManager, Context, Intent
 from android.os import Handler, Looper
-from java.lang import Runnable, String as JavaString
-from android.content import Intent
+from java.lang import Runnable, String as JavaString, Integer
 from android.net import Uri
 from android.graphics import Typeface
+from java.net import URL, HttpURLConnection
+from java.io import File, FileOutputStream
 
 # --- Telegram & Client Utilities ---
-from org.telegram.messenger import NotificationCenter, MessageObject
+from org.telegram.messenger import NotificationCenter, MessageObject, R, Utilities
 from org.telegram.tgnet import TLRPC
 from org.telegram.ui.ActionBar import Theme
 from com.exteragram.messenger.plugins.ui import PluginSettingsActivity
+from com.exteragram.messenger.plugins import PluginsController
 from client_utils import (
     get_messages_controller,
     get_last_fragment,
@@ -92,7 +95,7 @@ __id__ = "auto_forwarder_fork"
 __name__ = "Auto Fwd Fork"
 __description__ = "Sets up forwarding rules for any chat, including users, groups, and channels."
 __author__ = "@T3SL4"
-__version__ = "1.9.9.9"
+__version__ = "1.9.10.0"
 __min_version__ = "11.9.1"
 __icon__ = "msg2_forward"
 
@@ -107,27 +110,30 @@ DEFAULT_SETTINGS = {
     "antispam_delay_seconds": 1.0,
     "sequential_delay_seconds": 1.5
 }
-FILTER_TYPES = {
-    "text": "Text Messages",
-    "photos": "Photos",
-    "videos": "Videos",
-    "documents": "Files / Documents",
-    "audio": "Audio Files",
-    "voice": "Voice Messages",
-    "video_messages": "Video Messages (Roundies)",
-    "stickers": "Stickers",
-    "gifs": "GIFs & Animations"
-}
-FAQ_TEXT = """
---- **Disclaimer and Responsible Usage** ---
+FILTER_TYPES = collections.OrderedDict([
+    ("text", "Text Messages"),
+    ("media_captions", "Media Captions"),
+    ("photos", "Photos"),
+    ("videos", "Videos"),
+    ("documents", "Files / Documents"),
+    ("audio", "Audio Files"),
+    ("voice", "Voice Messages"),
+    ("video_messages", "Video Messages (Roundies)"),
+    ("stickers", "Stickers"),
+    ("gifs", "GIFs & Animations")
+])
+FAQ_TEXT = """--- **Disclaimer and Responsible Usage** ---
 Please be aware that using a plugin like this automates actions on your personal Telegram account. This practice is often referred to as 'self-botting'.
 This kind of automation may be considered a violation of [Telegram's Terms of Service](https://telegram.org/tos), which can prohibit bot-like activity from user accounts.
 Using this plugin carries potential risks, including account limitations or bans. You accept full responsibility for your actions. The author is not responsible for any consequences from your use or misuse of this tool.
 **Use at your own risk.**
+
 --- **FAQ** ---
 **🚀 Core Functionality**
 * **How do I create a rule?**
 Go into any chat you want to forward messages *from*. Tap the three-dots menu (⋮) in the top right and select "Auto Forward...". A dialog will then ask for the destination chat.
+* **How do I set the destination automatically?**
+In the rule setup dialog, tap "Set by Replying". Then, go to the destination chat (or a comment thread/topic within it), and reply to *any* message (or not) with the exact word `set`. The plugin will detect this, set the destination, and auto-delete your message.
 * **How do I edit or delete a rule?**
 Go to a chat where a rule is active and open the "Auto Forward..." menu item again. A "Manage Rule" dialog will appear, allowing you to modify or delete it. You can also manage all rules from the main plugin settings page.
 * **What's the difference between "Copy" and "Forward" mode?**
@@ -135,27 +141,38 @@ When setting up a rule, you have a checkbox for "Remove Original Author".
 - **Checked (Copy Mode):** Sends a brand new message to the destination. It looks like you sent it yourself. All text formatting is preserved.
 - **Unchecked (Forward Mode):** Performs a standard Telegram forward, including the "Forwarded from..." header, preserving the original author's context.
 * **Can I control which messages get forwarded?**
-Yes. When creating or modifying a rule, you can choose to forward messages from regular users, bots, and your own outgoing messages independently.
+Yes. When creating or modifying a rule, you can choose to forward messages from regular users, bots, and your own outgoing messages independently. You can also filter incoming messages to only forward from specific users or bots.
+
 --- **✨ Advanced Features & Formatting** ---
+* **How does forwarding to a topic work?**
+Use the "Set by Replying" feature. Go into the specific comment thread (topic) you want to forward to and reply to any message there with `set`. The plugin will automatically save the correct ID for that thread.
 * **How does the Anti-Spam Firewall work?**
 It's a rate-limiter that prevents a single user from flooding your destination chat. It works by enforcing a minimum time delay between forwards *from the same person*. You can configure this delay in the General Settings.
 * **How do the content filters work?**
 When creating or modifying a rule, you'll see checkboxes for different message types (Text, Photos, Videos, etc.). Simply uncheck any content type you *don't* want to be forwarded for that specific rule. For example, you can set up a rule to forward only photos and videos from a channel, ignoring all text messages.
+* **How does keyword/regex filtering work?**
+You can specify keywords or regex patterns that messages must contain to be forwarded. This works for text messages, media captions, and **document filenames**:
+- **Keywords:** Simple text matching (case-insensitive). Example: `"bitcoin"` will match messages containing "Bitcoin", "BITCOIN", etc.
+- **Regex Patterns:** Advanced pattern matching. Example: `"\\\\b(btc|bitcoin|₿)\\\\b"` will match whole words containing btc, bitcoin, or the bitcoin symbol.
+- **Leave the field empty** to disable keyword filtering (forward all messages that pass other filters).
+- If a regex pattern fails to compile, it will fall back to simple case-insensitive text matching.
 * **Does the plugin support text formatting (Markdown)?**
-Yes, completely. In 'Copy' mode, the plugin perfectly preserves all text formatting from the original message. This includes:
+Yes, completely. The plugin perfectly preserves all text formatting from the original message. This includes:
 - **Bold** and *italic* text
 - `Monospace code`
 - ~~Strikethrough~~ and __underline__
 - ||Spoilers||
 - [Custom Hyperlinks](https://telegram.org)
 - Mentions and #hashtags
+
 --- **⚙️ Technical Settings & Troubleshooting** ---
 * **What do the General Settings mean?**
 - **Min/Max Message Length:** Filters *text messages* based on their character count.
 - **Media Deferral Timeout:** A safety net for media files. When a file arrives, your app might need a moment to get the data required for forwarding. This is how long the plugin waits. Increase this value if large files you receive sometimes fail to forward.
 - **Album Buffering Timeout:** When a gallery of photos/videos is sent, the plugin waits a brief moment to collect all the images before forwarding them together as a single album. This controls that waiting period.
-- **Deduplication Window:** Prevents double-forwards. If Telegram sends a duplicate notification for the same message within this time window (in seconds), the plugin will ignore it.
-- **Anti-Spam Delay:** The core setting for the firewall, as explained above. Set to `0` to disable it.
+- **Sequential Delay:** The core setting for ordered forwarding. It's the pause between each sent message to enforce a strict sequence. Set to 0 to disable and restore high-speed parallel forwarding (which may break order).
+- **Deduplication Window:** Prevents double-forwards from client notification glitches. If Telegram sends a duplicate notification for the same message within this time window (in seconds), the plugin will ignore it.
+- **Anti-Spam Delay:** The secondary rate-limiter. Set to `0` unless you need to slow down forwards from a specific user.
 * **Why do large files I send myself sometimes fail to forward?**
 This is a known limitation. If your file takes longer to upload than the "Media Deferral Timeout", the plugin may not be able to forward it. The feature is most reliable for forwarding messages you receive or for your own small files that upload instantly.
 """
@@ -173,26 +190,56 @@ class DeferredTask(dynamic_proxy(Runnable)):
 
 
 class AlbumTask(dynamic_proxy(Runnable)):
-    """A Runnable class to handle the timeout for album processing."""
+    """A proxy class to run album processing after a short buffer period."""
     def __init__(self, plugin, grouped_id):
         super().__init__()
         self.plugin = plugin
         self.grouped_id = grouped_id
 
     def run(self):
-        """This method is called by the Android Handler after the album timeout to process the buffered album."""
-        self.plugin._process_album(self.grouped_id)
+        # Instead of processing, just put a reference to the complete album on the queue.
+        # The worker will pick it up and process it in the correct sequential order.
+        self.plugin.processing_queue.put(("album", self.grouped_id))
 
 
 class AutoForwarderPlugin(BasePlugin):
     """
-    The main class for the Auto Forwarder plugin. It handles forwarding rules,
-    listens for new messages, and manages the complex logic for forwarding
-    different types of content correctly.
+    The main class for the Auto Forwarder plugin.
+    This class handles settings, UI, rules, and the core forwarding logic.
     """
+    # --- Constants ---
     TON_ADDRESS = "UQDx2lC9bQW3A4LAfP4lSqtSftQSnLczt87Kn_CIcmJhLicm"
     USDT_ADDRESS = "TXLJNebRRAhwBRKtELMHJPNMtTZYHeoYBo"
     USER_TIMESTAMP_CACHE_SIZE = 500
+    PROCESSED_FILES_CACHE_SIZE = 200
+    GITHUB_OWNER = "cbkii"
+    GITHUB_REPO = "Auto-Forwarder-Plugin"
+    UPDATE_INTERVAL_SECONDS = 6 * 60 * 60
+
+    # --- Nested Proxy Classes ---
+    class InstallCallback(dynamic_proxy(Utilities.Callback)):
+        """A proxy for handling the result of a plugin installation."""
+        def __init__(self, callback_func):
+            super().__init__()
+            self.callback_func = callback_func
+        
+        def run(self, arg):
+            try:
+                self.callback_func(arg)
+            except Exception:
+                log(f"[{__id__}] Error in install callback proxy: {traceback.format_exc()}")
+
+    class OnClickListenerProxy(dynamic_proxy(View.OnClickListener)):
+        """A proxy class to handle Android's OnClickListener interface safely."""
+        def __init__(self, callback):
+            super().__init__()
+            self.callback = callback
+    
+        def onClick(self, view):
+            try:
+                self.callback(view)
+            except Exception:
+                log(f"[{__id__}] Error in OnClickListener proxy: {traceback.format_exc()}")
 
     # --- Nested MessageListener Class ---
     class MessageListener(dynamic_proxy(NotificationCenter.NotificationCenterDelegate)):
@@ -251,10 +298,12 @@ class AutoForwarderPlugin(BasePlugin):
             except Exception:
                 log(f"[{self.plugin.id}] ERROR in notification handler: {traceback.format_exc()}")
 
+    # --- Initialization ---
     def __init__(self):
-        """Initializes the AutoForwarderPlugin with default state and configuration."""
+        """Initializes the plugin's state and properties."""
         super().__init__()
         self.id = __id__
+        self.lock = threading.Lock()
         self.forwarding_rules = {}
         self.error_message = None
         self.deferred_messages = {}
@@ -262,11 +311,21 @@ class AutoForwarderPlugin(BasePlugin):
         self.processed_keys = collections.deque(maxlen=200)
         self.handler = Handler(Looper.getMainLooper())
         self.user_last_message_time = collections.OrderedDict()
+        self.processed_files_cache = collections.OrderedDict()
+        
         self.processing_queue = queue.Queue()
+        self.worker_thread = None
         self.stop_worker_thread = threading.Event()
+        
+        self.updater_thread = None
+        self.stop_updater_thread = threading.Event()
+        
         self.is_listening_for_reply = False
-        self.reply_context = {}
+        self.reply_listener_context = {}
+        self.reply_listener_timeout_task = None
+        
         self.message_listener = None
+
         self._load_configurable_settings()
 
     def on_plugin_load(self):
@@ -290,17 +349,20 @@ class AutoForwarderPlugin(BasePlugin):
         
         run_on_ui_thread(register_observer)
         
-        # Clear stop signal in case plugin is being reloaded
+        # Start worker thread for sequential processing
         self.stop_worker_thread.clear()
+        if self.worker_thread is None or not self.worker_thread.is_alive():
+            self.worker_thread = threading.Thread(target=self._worker_loop)
+            self.worker_thread.daemon = True
+            self.worker_thread.start()
         
-        # Start persistent worker thread for sequential message processing
-        # Note: Using a dedicated daemon thread here instead of run_on_queue because
-        # we need a long-lived, persistent queue processor that runs continuously
-        # throughout the plugin's lifecycle. This aligns with exteraGram best practices
-        # for daemon threads handling supporting background operations.
-        worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
-        worker_thread.start()
-        log(f"[{self.id}] Worker thread started.")
+        # Start auto-updater thread
+        self.stop_updater_thread.clear()
+        if self.updater_thread is None or not self.updater_thread.is_alive():
+            self.updater_thread = threading.Thread(target=self._updater_loop)
+            self.updater_thread.daemon = True
+            self.updater_thread.start()
+            log(f"[{self.id}] Auto-updater thread started.")
 
     def on_plugin_unload(self):
         """Called when the plugin is unloaded. Removes the observer and cancels any pending tasks."""
@@ -318,10 +380,13 @@ class AutoForwarderPlugin(BasePlugin):
         run_on_ui_thread(unregister_observer)
         self.handler.removeCallbacksAndMessages(None)
         self.stop_worker_thread.set()
+        self.processing_queue.put(None) # Unblock the worker's get() call
+        self.stop_updater_thread.set()
+        log(f"[{self.id}] Auto-updater thread stopped.")
         # Clear reply listener state to avoid stale references
         self.is_listening_for_reply = False
-        self.reply_context = {}
-        log(f"[{self.id}] Worker thread stop signal sent.")
+        self.reply_listener_context = {}
+        log(f"[{self.id}] Worker thread stopped.")
 
     def _load_setting_with_validation(self, setting_key, converter_func, default_value):
         """
@@ -372,37 +437,39 @@ class AutoForwarderPlugin(BasePlugin):
         self.global_keyword_preset = self.get_setting("global_keyword_preset", "")
         self.global_blacklist_words = self.get_setting("global_blacklist_words", "")
 
+    # --- Core Logic: Sequential Processing ---
     def _worker_loop(self):
-        """Worker thread loop that processes items from the queue sequentially."""
-        log(f"[{self.id}] Worker loop started.")
-        try:
-            while not self.stop_worker_thread.is_set():
-                try:
-                    item = self.processing_queue.get(timeout=1.0)
-                    
-                    if isinstance(item, tuple) and len(item) == 2 and item[0] == "album":
-                        grouped_id = item[1]
-                        log(f"[{self.id}] Worker processing album: {grouped_id}")
-                        self._process_album(grouped_id)
-                    else:
-                        # It's a message object
-                        log(f"[{self.id}] Worker processing message.")
-                        self.super_handle_message_event(item)
-                    
-                    # Sleep after processing to enforce sequential delay
+        """
+        A dedicated worker thread that processes messages one by one from a queue
+        to ensure sequential ordering.
+        """
+        log(f"[{self.id}] Sequential worker thread started.")
+        while not self.stop_worker_thread.is_set():
+            try:
+                item = self.processing_queue.get(timeout=1)
+                
+                if item is None:
+                    break
+
+                if isinstance(item, tuple) and item[0] == "album":
+                    _, grouped_id = item
+                    self._process_album(grouped_id)
+                else:
+                    message_object = item
+                    self.super_handle_message_event(message_object)
+                
+                # If sequential delay is enabled, pause between each processed item.
+                if self.sequential_delay_seconds > 0:
                     time.sleep(self.sequential_delay_seconds)
-                    
-                except queue.Empty:
-                    continue
-                except (OSError, ValueError) as e:
-                    log(f"[{self.id}] Queue operation error in worker loop: {e}")
-                    continue
-                except Exception as e:
-                    log(f"[{self.id}] ERROR processing item in worker loop: {traceback.format_exc()}")
-                    # Continue processing despite errors
-                    continue
-        finally:
-            log(f"[{self.id}] Worker loop stopped.")
+                
+                self.processing_queue.task_done()
+
+            except queue.Empty:
+                continue
+            except Exception:
+                log(f"[{self.id}] ERROR in worker thread: {traceback.format_exc()}")
+                
+        log(f"[{self.id}] Sequential worker thread stopped.")
 
     def _create_message_object_safely(self, message):
         """
@@ -495,11 +562,11 @@ class AutoForwarderPlugin(BasePlugin):
             message_text = (message.message or "").strip().lower()
             if message_text == "set":
                 dest_chat_id = source_chat_id
-                context = self.reply_context
+                context = self.reply_listener_context
                 if context and 'source_id' in context:
                     log(f"[{self.id}] Setting destination by reply: {dest_chat_id}")
                     self.is_listening_for_reply = False
-                    self.reply_context = {}
+                    self.reply_listener_context = {}
                     dest_name = self._get_chat_name(dest_chat_id)
                     
                     # Update the input field if available
@@ -518,18 +585,18 @@ class AutoForwarderPlugin(BasePlugin):
             return
 
         grouped_id = getattr(message, 'grouped_id', 0)
+
         if grouped_id != 0:
-            # Buffer album messages
-            if grouped_id not in self.album_buffer:
-                log(f"[{self.id}] Detected start of new album: {grouped_id}")
-                album_task = AlbumTask(self, grouped_id)
-                self.album_buffer[grouped_id] = {'messages': [], 'task': album_task}
-                self.handler.postDelayed(album_task, self.album_timeout_ms)
-            self.album_buffer[grouped_id]['messages'].append(message_object)
-            return
-        
-        # Queue single message for processing
-        self.processing_queue.put(message_object)
+            with self.lock:
+                if grouped_id not in self.album_buffer:
+                    log(f"[{self.id}] Triage: Detected start of new album: {grouped_id}")
+                    album_task = AlbumTask(self, grouped_id)
+                    self.album_buffer[grouped_id] = {'messages': [], 'task': album_task}
+                    self.handler.postDelayed(album_task, self.album_timeout_ms)
+                
+                self.album_buffer[grouped_id]['messages'].append(message_object)
+        else:
+            self.processing_queue.put(message_object)
 
     def super_handle_message_event(self, message_object):
         """
@@ -599,15 +666,22 @@ class AutoForwarderPlugin(BasePlugin):
                 if len(self.user_last_message_time) > self.USER_TIMESTAMP_CACHE_SIZE:
                     self.user_last_message_time.popitem(last=False)
 
-        event_key = None
-        if message.out:
-            event_key = ("outgoing", message.dialog_id, message.date, message.message or "")
-        else:
-            author_id = self._get_id_from_peer(message.from_id)
-            event_key = ("incoming", author_id, source_chat_id, message.id)
+        with self.lock:
+            event_key = None
+            if message.out:
+                event_key = ("outgoing", message.random_id)
+            else:
+                event_key = (source_chat_id, message.id)
 
-        if any(key == event_key for key, ts in self.processed_keys):
-            return
+            current_time = time.time()
+            while self.processed_keys and current_time - self.processed_keys[0][1] > self.deduplication_window_seconds:
+                self.processed_keys.popleft()
+
+            if any(key == event_key for key, ts in self.processed_keys):
+                log(f"[{self.id}] Deduplicating event via lock, ignoring: {event_key}")
+                return
+
+            self.processed_keys.append((event_key, current_time))
 
         is_media = hasattr(message, 'media') and message.media and not isinstance(message.media, TLRPC.TL_messageMediaEmpty)
         is_incomplete_media = is_media and not self._is_media_complete(message)
@@ -664,12 +738,14 @@ class AutoForwarderPlugin(BasePlugin):
             return
 
         album_key = (self._get_id_from_peer(first_message.from_id), source_chat_id, grouped_id)
-        current_time = time.time()
-        while self.processed_keys and current_time - self.processed_keys[0][1] > self.deduplication_window_seconds:
-            self.processed_keys.popleft()
-        if any(key == album_key for key, ts in self.processed_keys):
-            return
-        self.processed_keys.append((album_key, time.time()))
+        
+        with self.lock:
+            current_time = time.time()
+            while self.processed_keys and current_time - self.processed_keys[0][1] > self.deduplication_window_seconds:
+                self.processed_keys.popleft()
+            if any(key == album_key for key, ts in self.processed_keys):
+                return
+            self.processed_keys.append((album_key, time.time()))
         self._send_album(album_data['messages'], rule)
 
     def _normalize_message_text(self, text):
@@ -1251,6 +1327,7 @@ class AutoForwarderPlugin(BasePlugin):
             Text(text="USDT (TRC20)", icon="msg_copy", accent=True, on_click=lambda view: run_on_ui_thread(lambda: self._copy_to_clipboard(self.USDT_ADDRESS, "USDT"))),
             Divider(),
             Text(text="Disclaimer & FAQ", icon="msg_help", accent=True, on_click=lambda v: run_on_ui_thread(lambda: self._show_faq_dialog())),
+            Text(text="Check for Updates", icon="msg_retry", accent=True, on_click=lambda v: self.check_for_updates(is_manual=True)),
         ])
         return settings_ui
 
@@ -2353,5 +2430,156 @@ class AutoForwarderPlugin(BasePlugin):
     def _start_reply_listener(self, source_id, input_field):
         """Starts listening for a reply to set the destination."""
         self.is_listening_for_reply = True
-        self.reply_context = {'source_id': source_id, 'input_field': input_field}
+        self.reply_listener_context = {'source_id': source_id, 'input_field': input_field}
         run_on_ui_thread(lambda: BulletinHelper.show_success("Now go to the destination chat and send 'set'"))
+
+    # --- Update Mechanism ---
+    def _updater_loop(self):
+        """A background thread that periodically checks for new plugin updates."""
+        log(f"[{self.id}] Updater loop started.")
+        time.sleep(60)
+        while not self.stop_updater_thread.is_set():
+            self.check_for_updates(is_manual=False)
+            self.stop_updater_thread.wait(self.UPDATE_INTERVAL_SECONDS)
+        log(f"[{self.id}] Updater loop finished.")
+
+    def check_for_updates(self, is_manual=False):
+        """Initiates an update check, optionally showing UI feedback."""
+        if is_manual: BulletinHelper.show_info("Checking for updates...", get_last_fragment())
+        threading.Thread(target=self._perform_update_check, args=[is_manual]).start()
+
+    def _perform_update_check(self, is_manual):
+        """Connects to the GitHub API to check for the latest release."""
+        try:
+            api_url = URL(f"https://api.github.com/repos/{self.GITHUB_OWNER}/{self.GITHUB_REPO}/releases/latest")
+            connection = api_url.openConnection()
+            connection.setRequestMethod("GET")
+            connection.connect()
+            if connection.getResponseCode() == HttpURLConnection.HTTP_OK:
+                stream = connection.getInputStream()
+                scanner = Scanner(stream, "UTF-8").useDelimiter("\\A")
+                response_str = scanner.next() if scanner.hasNext() else ""
+                scanner.close()
+                release_data = json.loads(response_str)
+                latest_version_tag = release_data.get("tag_name", "0.0.0").lstrip('v')
+                current_version = __version__.split('-')[0]
+                
+                latest_v_tuple = tuple(map(int, latest_version_tag.split('.')))
+                current_v_tuple = tuple(map(int, current_version.split('.')))
+
+                if latest_v_tuple > current_v_tuple:
+                    changelog = release_data.get("body", "No changelog provided.")
+                    assets = release_data.get("assets", [])
+                    download_url = None
+                    for asset in assets:
+                        if asset.get("name", "").endswith(".py"):
+                            download_url = asset.get("browser_download_url")
+                            break
+                    if download_url:
+                        run_on_ui_thread(lambda: self._show_update_dialog(latest_version_tag, changelog, download_url))
+                    elif is_manual:
+                        BulletinHelper.show_error("Update found, but no download file available.", get_last_fragment())
+                elif is_manual:
+                    BulletinHelper.show_info("You are on the latest version!", get_last_fragment())
+            elif is_manual:
+                BulletinHelper.show_error(f"Failed to fetch updates (HTTP {connection.getResponseCode()})", get_last_fragment())
+        except Exception as e:
+            log(f"[{self.id}] Update check failed: {traceback.format_exc()}")
+            if is_manual: BulletinHelper.show_error("Update check failed. See logs.", get_last_fragment())
+
+    def _show_update_dialog(self, version, changelog, download_url):
+        """Displays a dialog with changelog and an option to update."""
+        activity = get_last_fragment().getParentActivity()
+        if not activity: return
+        builder = AlertDialogBuilder(activity)
+        builder.set_title(f"Update to v{version} available!")
+        margin_dp = 20
+        margin_px = int(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, margin_dp, activity.getResources().getDisplayMetrics()))
+        scroller = ScrollView(activity)
+        changelog_view = TextView(activity)
+        changelog_view.setPadding(margin_px, 0, margin_px, margin_px // 2)
+
+        html_text = self._process_changelog_markdown(changelog)
+        if hasattr(Html, 'FROM_HTML_MODE_LEGACY'):
+            changelog_view.setText(Html.fromHtml(html_text, Html.FROM_HTML_MODE_LEGACY))
+        else:
+            changelog_view.setText(Html.fromHtml(html_text))
+        
+        changelog_view.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
+        changelog_view.setLinkTextColor(Theme.getColor(Theme.key_dialogTextLink))
+        changelog_view.setMovementMethod(LinkMovementMethod.getInstance())
+        changelog_view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15)
+        scroller.addView(changelog_view)
+        builder.set_view(scroller)
+
+        on_update_click = lambda b, w: threading.Thread(target=self._download_and_install, args=[download_url, version]).start()
+        builder.set_positive_button("Update", on_update_click)
+        builder.set_negative_button("Cancel", None)
+        run_on_ui_thread(builder.show)
+
+    def _download_and_install(self, url, version):
+        """Downloads the new plugin file and initiates the installation process."""
+        try:
+            BulletinHelper.show_info(f"Downloading update v{version}...", get_last_fragment())
+            connection = URL(url).openConnection()
+            connection.connect()
+            if connection.getResponseCode() == HttpURLConnection.HTTP_OK:
+                plugins_controller = PluginsController.getInstance()
+                cache_dir = File(plugins_controller.pluginsDir, ".cache")
+                cache_dir.mkdirs()
+                temp_file = File(cache_dir, f"temp_{self.id}_v{version}.py")
+                input_stream = connection.getInputStream()
+                output_stream = FileOutputStream(temp_file)
+                buffer = bytearray(4096)
+                bytes_read = input_stream.read(buffer)
+                while bytes_read != -1:
+                    output_stream.write(buffer, 0, bytes_read)
+                    bytes_read = input_stream.read(buffer)
+                output_stream.close()
+                input_stream.close()
+                log(f"[{self.id}] Download complete. Installing from {temp_file.getAbsolutePath()}")
+
+                def on_install_callback(error_msg):
+                    if error_msg:
+                        log(f"[{self.id}] Installation failed: {error_msg}")
+                        BulletinHelper.show_error(f"Update failed: {error_msg}", get_last_fragment())
+                    else:
+                        log(f"[{self.id}] Update to v{version} successful! Restart ExteraGram to apply.")
+                        def close_settings_action():
+                            fragment = get_last_fragment()
+                            if fragment and hasattr(fragment, 'finishFragment'):
+                                run_on_ui_thread(fragment.finishFragment)
+                        BulletinHelper.show_with_button(f"Update v{version} installed! Please restart.", R.raw.chats_infotip, "DONE",
+                            lambda: close_settings_action(), fragment=get_last_fragment())
+                    if temp_file.exists():
+                        temp_file.delete()
+                
+                install_callback_proxy = self.InstallCallback(on_install_callback)
+                plugins_controller.loadPluginFromFile(temp_file.getAbsolutePath(), install_callback_proxy)
+            else:
+                BulletinHelper.show_error("Download failed.", get_last_fragment())
+        except Exception:
+            log(f"[{self.id}] Download and install failed: {traceback.format_exc()}")
+            BulletinHelper.show_error("An error occurred during update.", get_last_fragment())
+
+    def _process_changelog_markdown(self, text):
+        """A simple markdown-to-HTML converter for the update dialog."""
+        def process_inline(line):
+            line = re.sub(r'\[(.*?)\]\((.*?)\)', r'<a href="\2">\1</a>', line)
+            line = re.sub(r'\*\*(.*?)\*\*', r'<b>\1</b>', line)
+            line = re.sub(r'__(.*?)__', r'<u>\1</u>', line)
+            line = re.sub(r'~~(.*?)~~', r'<s>\1</s>', line)
+            line = re.sub(r'\*(.*?)\*', r'<i>\1</i>', line)
+            line = re.sub(r'`(.*?)`', r'<code>\1</code>', line)
+            return line
+
+        html_lines = []
+        for line in text.replace('\r', '').split('\n'):
+            stripped = line.strip()
+            if not stripped: html_lines.append("") ; continue
+            if stripped.startswith('### '): html_lines.append(f"<b>{process_inline(stripped[4:])}</b>")
+            elif stripped.startswith('* '): html_lines.append(f"•&nbsp;&nbsp;{process_inline(stripped[2:])}")
+            elif stripped.startswith('- '): html_lines.append(f"&nbsp;&nbsp;-&nbsp;&nbsp;{process_inline(stripped[2:])}")
+            else: html_lines.append(process_inline(stripped))
+        html_text = '<br>'.join(html_lines)
+        return re.sub(r'(<br>\s*){2,}', '<br><br>', html_text)
