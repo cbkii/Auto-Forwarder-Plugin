@@ -1326,6 +1326,7 @@ class AutoForwarderPlugin(BasePlugin):
             Text(text="USDT (TRC20)", icon="msg_copy", accent=True, on_click=lambda view: run_on_ui_thread(lambda: self._copy_to_clipboard(self.USDT_ADDRESS, "USDT"))),
             Divider(),
             Text(text="Disclaimer & FAQ", icon="msg_help", accent=True, on_click=lambda v: run_on_ui_thread(lambda: self._show_faq_dialog())),
+            Text(text="Check for Updates", icon="msg_retry", accent=True, on_click=lambda v: self.check_for_updates(is_manual=True)),
         ])
         return settings_ui
 
