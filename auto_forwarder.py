@@ -69,7 +69,6 @@ from android.content.res import ColorStateList
 from android.content import ClipData, ClipboardManager, Context, Intent
 from android.os import Handler, Looper
 from java.lang import Runnable, String as JavaString, Integer
-from android.content import Intent
 from android.net import Uri
 from android.graphics import Typeface
 from java.net import URL, HttpURLConnection
@@ -140,7 +139,7 @@ Go to a chat where a rule is active and open the "Auto Forward..." menu item aga
 * **What's the difference between "Copy" and "Forward" mode?**
 When setting up a rule, you have a checkbox for "Remove Original Author".
 - **Checked (Copy Mode):** Sends a brand new message to the destination. It looks like you sent it yourself. All text formatting is preserved.
-- **Unchecked (Forward Mode):** This option is not implemented in Copy mode. The plugin primarily operates by copying messages.
+- **Unchecked (Forward Mode):** Performs a standard Telegram forward, including the "Forwarded from..." header, preserving the original author's context.
 * **Can I control which messages get forwarded?**
 Yes. When creating or modifying a rule, you can choose to forward messages from regular users, bots, and your own outgoing messages independently. You can also filter incoming messages to only forward from specific users or bots.
 
@@ -739,12 +738,14 @@ class AutoForwarderPlugin(BasePlugin):
             return
 
         album_key = (self._get_id_from_peer(first_message.from_id), source_chat_id, grouped_id)
-        current_time = time.time()
-        while self.processed_keys and current_time - self.processed_keys[0][1] > self.deduplication_window_seconds:
-            self.processed_keys.popleft()
-        if any(key == album_key for key, ts in self.processed_keys):
-            return
-        self.processed_keys.append((album_key, time.time()))
+        
+        with self.lock:
+            current_time = time.time()
+            while self.processed_keys and current_time - self.processed_keys[0][1] > self.deduplication_window_seconds:
+                self.processed_keys.popleft()
+            if any(key == album_key for key, ts in self.processed_keys):
+                return
+            self.processed_keys.append((album_key, time.time()))
         self._send_album(album_data['messages'], rule)
 
     def _normalize_message_text(self, text):
