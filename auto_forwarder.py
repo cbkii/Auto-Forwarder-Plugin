@@ -42,8 +42,9 @@ import random
 import collections
 import time
 import re
-import queue
+import os
 import threading
+import queue
 import unicodedata
 import datetime
 
@@ -58,25 +59,28 @@ from ui.bulletin import BulletinHelper
 
 # --- Android & Chaquopy Imports ---
 from android_utils import log, run_on_ui_thread
-from android.widget import EditText, FrameLayout, CheckBox, LinearLayout, TextView, Toast, ScrollView
+from android.widget import EditText, FrameLayout, CheckBox, LinearLayout, TextView, Toast, ScrollView, CompoundButton
 from android.text import InputType, Html
 from android.text.method import LinkMovementMethod
 from android.util import TypedValue
 from android.view import View, ViewGroup
-from java.util import ArrayList, HashSet
+from java.util import ArrayList, HashSet, Scanner
 from android.content.res import ColorStateList
-from android.content import ClipData, ClipboardManager, Context
+from android.content import ClipData, ClipboardManager, Context, Intent
 from android.os import Handler, Looper
-from java.lang import Runnable, String as JavaString
+from java.lang import Runnable, String as JavaString, Integer
 from android.content import Intent
 from android.net import Uri
 from android.graphics import Typeface
+from java.net import URL, HttpURLConnection
+from java.io import File, FileOutputStream
 
 # --- Telegram & Client Utilities ---
-from org.telegram.messenger import NotificationCenter, MessageObject
+from org.telegram.messenger import NotificationCenter, MessageObject, R, Utilities
 from org.telegram.tgnet import TLRPC
 from org.telegram.ui.ActionBar import Theme
 from com.exteragram.messenger.plugins.ui import PluginSettingsActivity
+from com.exteragram.messenger.plugins import PluginsController
 from client_utils import (
     get_messages_controller,
     get_last_fragment,
@@ -92,7 +96,7 @@ __id__ = "auto_forwarder_fork"
 __name__ = "Auto Fwd Fork"
 __description__ = "Sets up forwarding rules for any chat, including users, groups, and channels."
 __author__ = "@T3SL4"
-__version__ = "1.9.9.9"
+__version__ = "1.9.10.0"
 __min_version__ = "11.9.1"
 __icon__ = "msg2_forward"
 
@@ -107,17 +111,18 @@ DEFAULT_SETTINGS = {
     "antispam_delay_seconds": 1.0,
     "sequential_delay_seconds": 1.5
 }
-FILTER_TYPES = {
-    "text": "Text Messages",
-    "photos": "Photos",
-    "videos": "Videos",
-    "documents": "Files / Documents",
-    "audio": "Audio Files",
-    "voice": "Voice Messages",
-    "video_messages": "Video Messages (Roundies)",
-    "stickers": "Stickers",
-    "gifs": "GIFs & Animations"
-}
+FILTER_TYPES = collections.OrderedDict([
+    ("text", "Text Messages"),
+    ("media_captions", "Media Captions"),
+    ("photos", "Photos"),
+    ("videos", "Videos"),
+    ("documents", "Files / Documents"),
+    ("audio", "Audio Files"),
+    ("voice", "Voice Messages"),
+    ("video_messages", "Video Messages (Roundies)"),
+    ("stickers", "Stickers"),
+    ("gifs", "GIFs & Animations")
+])
 FAQ_TEXT = """
 --- **Disclaimer and Responsible Usage** ---
 Please be aware that using a plugin like this automates actions on your personal Telegram account. This practice is often referred to as 'self-botting'.
@@ -173,26 +178,56 @@ class DeferredTask(dynamic_proxy(Runnable)):
 
 
 class AlbumTask(dynamic_proxy(Runnable)):
-    """A Runnable class to handle the timeout for album processing."""
+    """A proxy class to run album processing after a short buffer period."""
     def __init__(self, plugin, grouped_id):
         super().__init__()
         self.plugin = plugin
         self.grouped_id = grouped_id
 
     def run(self):
-        """This method is called by the Android Handler after the album timeout to process the buffered album."""
-        self.plugin._process_album(self.grouped_id)
+        # Instead of processing, just put a reference to the complete album on the queue.
+        # The worker will pick it up and process it in the correct sequential order.
+        self.plugin.processing_queue.put(("album", self.grouped_id))
 
 
 class AutoForwarderPlugin(BasePlugin):
     """
-    The main class for the Auto Forwarder plugin. It handles forwarding rules,
-    listens for new messages, and manages the complex logic for forwarding
-    different types of content correctly.
+    The main class for the Auto Forwarder plugin.
+    This class handles settings, UI, rules, and the core forwarding logic.
     """
+    # --- Constants ---
     TON_ADDRESS = "UQDx2lC9bQW3A4LAfP4lSqtSftQSnLczt87Kn_CIcmJhLicm"
     USDT_ADDRESS = "TXLJNebRRAhwBRKtELMHJPNMtTZYHeoYBo"
     USER_TIMESTAMP_CACHE_SIZE = 500
+    PROCESSED_FILES_CACHE_SIZE = 200
+    GITHUB_OWNER = "cbkii"
+    GITHUB_REPO = "Auto-Forwarder-Plugin"
+    UPDATE_INTERVAL_SECONDS = 6 * 60 * 60
+
+    # --- Nested Proxy Classes ---
+    class InstallCallback(dynamic_proxy(Utilities.Callback)):
+        """A proxy for handling the result of a plugin installation."""
+        def __init__(self, callback_func):
+            super().__init__()
+            self.callback_func = callback_func
+        
+        def run(self, arg):
+            try:
+                self.callback_func(arg)
+            except Exception:
+                log(f"[{__id__}] Error in install callback proxy: {traceback.format_exc()}")
+
+    class OnClickListenerProxy(dynamic_proxy(View.OnClickListener)):
+        """A proxy class to handle Android's OnClickListener interface safely."""
+        def __init__(self, callback):
+            super().__init__()
+            self.callback = callback
+    
+        def onClick(self, view):
+            try:
+                self.callback(view)
+            except Exception:
+                log(f"[{__id__}] Error in OnClickListener proxy: {traceback.format_exc()}")
 
     # --- Nested MessageListener Class ---
     class MessageListener(dynamic_proxy(NotificationCenter.NotificationCenterDelegate)):
@@ -251,10 +286,12 @@ class AutoForwarderPlugin(BasePlugin):
             except Exception:
                 log(f"[{self.plugin.id}] ERROR in notification handler: {traceback.format_exc()}")
 
+    # --- Initialization ---
     def __init__(self):
-        """Initializes the AutoForwarderPlugin with default state and configuration."""
+        """Initializes the plugin's state and properties."""
         super().__init__()
         self.id = __id__
+        self.lock = threading.Lock()
         self.forwarding_rules = {}
         self.error_message = None
         self.deferred_messages = {}
@@ -262,11 +299,21 @@ class AutoForwarderPlugin(BasePlugin):
         self.processed_keys = collections.deque(maxlen=200)
         self.handler = Handler(Looper.getMainLooper())
         self.user_last_message_time = collections.OrderedDict()
+        self.processed_files_cache = collections.OrderedDict()
+        
         self.processing_queue = queue.Queue()
+        self.worker_thread = None
         self.stop_worker_thread = threading.Event()
+        
+        self.updater_thread = None
+        self.stop_updater_thread = threading.Event()
+        
         self.is_listening_for_reply = False
-        self.reply_context = {}
+        self.reply_listener_context = {}
+        self.reply_listener_timeout_task = None
+        
         self.message_listener = None
+
         self._load_configurable_settings()
 
     def on_plugin_load(self):
@@ -290,17 +337,20 @@ class AutoForwarderPlugin(BasePlugin):
         
         run_on_ui_thread(register_observer)
         
-        # Clear stop signal in case plugin is being reloaded
+        # Start worker thread for sequential processing
         self.stop_worker_thread.clear()
+        if self.worker_thread is None or not self.worker_thread.is_alive():
+            self.worker_thread = threading.Thread(target=self._worker_loop)
+            self.worker_thread.daemon = True
+            self.worker_thread.start()
         
-        # Start persistent worker thread for sequential message processing
-        # Note: Using a dedicated daemon thread here instead of run_on_queue because
-        # we need a long-lived, persistent queue processor that runs continuously
-        # throughout the plugin's lifecycle. This aligns with exteraGram best practices
-        # for daemon threads handling supporting background operations.
-        worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
-        worker_thread.start()
-        log(f"[{self.id}] Worker thread started.")
+        # Start auto-updater thread
+        self.stop_updater_thread.clear()
+        if self.updater_thread is None or not self.updater_thread.is_alive():
+            self.updater_thread = threading.Thread(target=self._updater_loop)
+            self.updater_thread.daemon = True
+            self.updater_thread.start()
+            log(f"[{self.id}] Auto-updater thread started.")
 
     def on_plugin_unload(self):
         """Called when the plugin is unloaded. Removes the observer and cancels any pending tasks."""
@@ -318,10 +368,13 @@ class AutoForwarderPlugin(BasePlugin):
         run_on_ui_thread(unregister_observer)
         self.handler.removeCallbacksAndMessages(None)
         self.stop_worker_thread.set()
+        self.processing_queue.put(None) # Unblock the worker's get() call
+        self.stop_updater_thread.set()
+        log(f"[{self.id}] Auto-updater thread stopped.")
         # Clear reply listener state to avoid stale references
         self.is_listening_for_reply = False
-        self.reply_context = {}
-        log(f"[{self.id}] Worker thread stop signal sent.")
+        self.reply_listener_context = {}
+        log(f"[{self.id}] Worker thread stopped.")
 
     def _load_setting_with_validation(self, setting_key, converter_func, default_value):
         """
@@ -372,37 +425,39 @@ class AutoForwarderPlugin(BasePlugin):
         self.global_keyword_preset = self.get_setting("global_keyword_preset", "")
         self.global_blacklist_words = self.get_setting("global_blacklist_words", "")
 
+    # --- Core Logic: Sequential Processing ---
     def _worker_loop(self):
-        """Worker thread loop that processes items from the queue sequentially."""
-        log(f"[{self.id}] Worker loop started.")
-        try:
-            while not self.stop_worker_thread.is_set():
-                try:
-                    item = self.processing_queue.get(timeout=1.0)
-                    
-                    if isinstance(item, tuple) and len(item) == 2 and item[0] == "album":
-                        grouped_id = item[1]
-                        log(f"[{self.id}] Worker processing album: {grouped_id}")
-                        self._process_album(grouped_id)
-                    else:
-                        # It's a message object
-                        log(f"[{self.id}] Worker processing message.")
-                        self.super_handle_message_event(item)
-                    
-                    # Sleep after processing to enforce sequential delay
+        """
+        A dedicated worker thread that processes messages one by one from a queue
+        to ensure sequential ordering.
+        """
+        log(f"[{self.id}] Sequential worker thread started.")
+        while not self.stop_worker_thread.is_set():
+            try:
+                item = self.processing_queue.get(timeout=1)
+                
+                if item is None:
+                    break
+
+                if isinstance(item, tuple) and item[0] == "album":
+                    _, grouped_id = item
+                    self._process_album(grouped_id)
+                else:
+                    message_object = item
+                    self.super_handle_message_event(message_object)
+                
+                # If sequential delay is enabled, pause between each processed item.
+                if self.sequential_delay_seconds > 0:
                     time.sleep(self.sequential_delay_seconds)
-                    
-                except queue.Empty:
-                    continue
-                except (OSError, ValueError) as e:
-                    log(f"[{self.id}] Queue operation error in worker loop: {e}")
-                    continue
-                except Exception as e:
-                    log(f"[{self.id}] ERROR processing item in worker loop: {traceback.format_exc()}")
-                    # Continue processing despite errors
-                    continue
-        finally:
-            log(f"[{self.id}] Worker loop stopped.")
+                
+                self.processing_queue.task_done()
+
+            except queue.Empty:
+                continue
+            except Exception:
+                log(f"[{self.id}] ERROR in worker thread: {traceback.format_exc()}")
+                
+        log(f"[{self.id}] Sequential worker thread stopped.")
 
     def _create_message_object_safely(self, message):
         """
