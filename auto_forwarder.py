@@ -329,40 +329,33 @@ class AutoForwarderPlugin(BasePlugin):
         self._load_configurable_settings()
 
     def on_plugin_load(self):
-        """Called when the plugin is loaded. Registers the new message observer."""
+        """Called when the plugin is loaded or reloaded."""
         log(f"[{self.id}] Loading version {__version__}...")
         self._load_configurable_settings()
         self._load_forwarding_rules()
-        
-        # Add the chat menu item (BasePlugin handles UI thread internally if needed)
         self._add_chat_menu_item()
-        
-        # Register the message listener on UI thread
-        def register_observer():
-            account_instance = get_account_instance()
-            if account_instance:
-                self.message_listener = self.MessageListener(self)
-                account_instance.getNotificationCenter().addObserver(self.message_listener, NotificationCenter.didReceiveNewMessages)
-                log(f"[{self.id}] Message observer successfully registered.")
-            else:
-                log(f"[{self.id}] WARNING: Failed to register message observer - account_instance is None")
-        
-        run_on_ui_thread(register_observer)
-        
-        # Start worker thread for sequential processing
+
         self.stop_worker_thread.clear()
         if self.worker_thread is None or not self.worker_thread.is_alive():
             self.worker_thread = threading.Thread(target=self._worker_loop)
             self.worker_thread.daemon = True
             self.worker_thread.start()
-        
-        # Start auto-updater thread
+            
         self.stop_updater_thread.clear()
         if self.updater_thread is None or not self.updater_thread.is_alive():
             self.updater_thread = threading.Thread(target=self._updater_loop)
             self.updater_thread.daemon = True
             self.updater_thread.start()
             log(f"[{self.id}] Auto-updater thread started.")
+
+        def register_observer():
+            account_instance = get_account_instance()
+            if account_instance:
+                self.message_listener = self.MessageListener(self)
+                account_instance.getNotificationCenter().addObserver(self.message_listener, NotificationCenter.didReceiveNewMessages)
+                log(f"[{self.id}] Message observer successfully registered.")
+
+        run_on_ui_thread(register_observer)
 
     def on_plugin_unload(self):
         """Called when the plugin is unloaded. Removes the observer and cancels any pending tasks."""
