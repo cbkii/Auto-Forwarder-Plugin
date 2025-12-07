@@ -83,7 +83,7 @@ This plugin is configured entirely through the Telegram user interface.
 
 ### Creating a Rule (The Easy Way)
 1.  Go into the chat you want to forward messages **from**.
-2.  Tap the three-dots menu (**⋮**) in the top-right corner and select **Auto Forward...**.
+2.  Tap the three-dots menu (**⋮**) in the top-right corner and select **Auto Fwd...**.
 3.  In the rule setup dialog, tap the **"Set by Replying"** button.
 4.  A prompt will appear. Click **Proceed**.
 5.  Navigate to your desired destination chat. This can be a user, group, channel, or even a specific **topic/comment thread**.
@@ -92,21 +92,21 @@ This plugin is configured entirely through the Telegram user interface.
 
 ### Creating a Rule (Manual Method)
 1.  Go into the chat you want to forward messages **from**.
-2.  Tap the three-dots menu (**⋮**) in the top-right corner and select **Auto Forward...**.
+2.  Tap the three-dots menu (**⋮**) in the top-right corner and select **Auto Fwd...**.
 3.  A dialog will appear. Manually enter the destination chat's ID, @username, or private `t.me/joinchat/...` link.
 4.  Configure the other options, such as content filters, keyword matching, and specific author whitelists.
 5.  Tap **Set** to save the rule.
 
 ### Editing or Deleting a Rule
 1.  Go into a chat that already has an active forwarding rule.
-2.  Open the **Auto Forward...** menu item again.
+2.  Open the **Auto Fwd...** menu item again.
 3.  A management dialog will appear, allowing you to **Modify** or **Delete** the rule for that chat.
 
 ### Processing Unread or Historical Messages
 1.  Go into a chat with an active forwarding rule.
 2.  Tap the three-dots menu (**⋮**) in the top-right corner.
 3.  Select **Process Unread Messages** to forward all unread messages, or **Process Messages from Date** to forward messages from the last X days.
-4.  Alternatively, go to the plugin settings page and use the **"Forward Unread (All Rules)"** or **"Forward Last X Days (All Rules)"** buttons to process messages for all configured rules at once.
+4.  Alternatively, go to the plugin settings page and use the **"Fwd Unread (All Rules)"** or **"Fwd Last X Days (All Rules)"** buttons to process messages for all configured rules at once.
 
 ## ⚙️ Configuration
 
@@ -120,8 +120,8 @@ Key settings include:
 - **Global Keyword/Regex Filter:** An optional filter that can be applied to multiple rules. Enable "use global regex" in each rule to apply this filter in addition to the rule's local filter.
 
 You will also find:
-- **Forward Unread (All Rules):** Processes unread messages for all configured rules.
-- **Forward Last X Days (All Rules):** Processes historical messages (1-30 days) for all configured rules.
+- **Fwd Unread (All Rules):** Processes unread messages for all configured rules.
+- **Fwd Last X Days (All Rules):** Processes historical messages (1-30 days) for all configured rules.
 - **Check for Updates:** Checks for new plugin versions on GitHub.
 
 

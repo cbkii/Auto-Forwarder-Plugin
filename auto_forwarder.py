@@ -1175,8 +1175,8 @@ class AutoForwarderPlugin(BasePlugin):
             Input(key=GLOBAL_KEYWORD_PATTERN, text="Global Keyword/Regex Filter (optional)", default="", subtext="Apply this filter to all rules that enable 'use global regex'."),
             Divider(),
             Header(text="Global Actions"),
-            Text(text="Forward Unread (All Rules)", icon="msg_unread", accent=True, on_click=lambda v: self._forward_unread_all_rules()),
-            Text(text="Forward Last X Days (All Rules)", icon="msg_calendar", accent=True, on_click=lambda v: self._forward_historical_all_rules()),
+            Text(text="Fwd Unread (All Rules)", icon="msg_unread", accent=True, on_click=lambda v: self._forward_unread_all_rules()),
+            Text(text="Fwd Last X Days (All Rules)", icon="msg_calendar", accent=True, on_click=lambda v: self._forward_historical_all_rules()),
             Divider(),
             Header(text="Active Forwarding Rules")
         ]
@@ -1212,7 +1212,7 @@ class AutoForwarderPlugin(BasePlugin):
 
     def _add_chat_menu_item(self):
         """Adds the 'Auto Forward...' option to the chat three-dots menu."""
-        self.add_menu_item(MenuItemData(menu_type=MenuItemType.CHAT_ACTION_MENU, text="Auto Forward...", icon="msg_forward", on_click=self._on_menu_item_click))
+        self.add_menu_item(MenuItemData(menu_type=MenuItemType.CHAT_ACTION_MENU, text="Auto Fwd...", icon="msg_forward", on_click=self._on_menu_item_click))
         self.add_menu_item(MenuItemData(menu_type=MenuItemType.CHAT_ACTION_MENU, text="Process Unread Messages", icon="msg_unread", on_click=self._on_process_unread_click))
         self.add_menu_item(MenuItemData(menu_type=MenuItemType.CHAT_ACTION_MENU, text="Process Messages from Date", icon="msg_calendar", on_click=self._on_process_historical_click))
 
@@ -1389,7 +1389,7 @@ class AutoForwarderPlugin(BasePlugin):
             quote_replies_checkbox.setLayoutParams(checkbox_params); main_layout.addView(quote_replies_checkbox)
     
             forward_to_topic_checkbox = CheckBox(activity)
-            forward_to_topic_checkbox.setText("Forward to Topic / Comment Thread")
+            forward_to_topic_checkbox.setText("Fwd to Topic / Comment Thread")
             forward_to_topic_checkbox.setTextColor(Theme.getColor(Theme.key_dialogTextBlack)); forward_to_topic_checkbox.setButtonTintList(checkbox_tint_list)
             forward_to_topic_checkbox.setLayoutParams(checkbox_params); main_layout.addView(forward_to_topic_checkbox)
     
@@ -1414,7 +1414,7 @@ class AutoForwarderPlugin(BasePlugin):
             divider_one = View(activity); divider_one.setBackgroundColor(Theme.getColor(Theme.key_divider)); divider_one.setLayoutParams(divider_params); main_layout.addView(divider_one)
     
             author_header = TextView(activity)
-            author_header.setText("Forward messages from:")
+            author_header.setText("Fwd messages from:")
             author_header.setTextColor(Theme.getColor(Theme.key_dialogTextBlack)); author_header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16)
             author_header_params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             author_header_params.setMargins(margin_px, 0, margin_px, margin_px // 4); author_header.setLayoutParams(author_header_params); main_layout.addView(author_header)
@@ -1451,7 +1451,7 @@ class AutoForwarderPlugin(BasePlugin):
             divider_two = View(activity); divider_two.setBackgroundColor(Theme.getColor(Theme.key_divider)); divider_two.setLayoutParams(divider_params); main_layout.addView(divider_two)
     
             filter_header = TextView(activity)
-            filter_header.setText("Content to forward:")
+            filter_header.setText("Content to fwd:")
             filter_header.setTextColor(Theme.getColor(Theme.key_dialogTextBlack)); filter_header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16)
             filter_header_params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             filter_header_params.setMargins(margin_px, 0, margin_px, 0); filter_header.setLayoutParams(filter_header_params); main_layout.addView(filter_header)
