@@ -80,15 +80,19 @@ from client_utils import (
 
 # --- Plugin Metadata ---
 __id__ = "auto_forwarder"
-__name__ = "Auto Forwarder"
+__name__ = "Auto Fwd Fork"
 __description__ = "Sets up forwarding rules for any chat, including users, groups, and channels."
-__author__ = "@T3SL4"
-__version__ = "1.9.0"
+__author__ = "@T3SL4,@cbkii"
+__version__ = "1.9.9.9"
 __min_version__ = "11.9.1"
 __icon__ = "Putin_1337/14"
 
 # --- Configuration Constants ---
 FORWARDING_RULES_KEY = "forwarding_rules_v1337"
+LAST_SEEN_IDS_KEY = "last_seen_inbox_ids_v1337"
+GLOBAL_KEYWORD_PATTERN = "global_keyword_pattern_v1337"
+MIN_HISTORICAL_DAYS = 1
+MAX_HISTORICAL_DAYS = 30
 DEFAULT_SETTINGS = {
     "deferral_timeout_ms": 5000,
     "min_msg_length": 1,
@@ -238,6 +242,7 @@ class AutoForwarderPlugin(BasePlugin):
         self.id = __id__
         self.lock = threading.Lock()
         self.forwarding_rules = {}
+        self.last_seen_inbox_ids = {}
         self.error_message = None
         self.deferred_messages = {}
         self.album_buffer = {}
@@ -260,6 +265,7 @@ class AutoForwarderPlugin(BasePlugin):
         self.message_listener = None
 
         self._load_configurable_settings()
+        self._load_last_seen_ids()
 
     # --- Dedicated Notification Listener ---
     class MessageListener(dynamic_proxy(NotificationCenter.NotificationCenterDelegate)):
@@ -379,6 +385,55 @@ class AutoForwarderPlugin(BasePlugin):
         """Saves all forwarding rules to JSON storage."""
         self.set_setting(FORWARDING_RULES_KEY, json.dumps({str(k): v for k, v in self.forwarding_rules.items()}))
         self._load_forwarding_rules()
+
+    def _load_last_seen_ids(self):
+        """Loads per-chat last seen inbox IDs from JSON storage."""
+        try:
+            ids_str = self.get_setting(LAST_SEEN_IDS_KEY, "{}")
+            self.last_seen_inbox_ids = {int(k): int(v) for k, v in json.loads(ids_str).items()}
+        except Exception:
+            self.last_seen_inbox_ids = {}
+
+    def _save_last_seen_ids(self):
+        """Saves per-chat last seen inbox IDs to JSON storage."""
+        self.set_setting(LAST_SEEN_IDS_KEY, json.dumps({str(k): v for k, v in self.last_seen_inbox_ids.items()}))
+
+    def _update_last_seen_id(self, chat_id, message_id):
+        """Updates the last seen inbox ID for a chat after successful send."""
+        if message_id > self.last_seen_inbox_ids.get(chat_id, 0):
+            self.last_seen_inbox_ids[chat_id] = message_id
+            self._save_last_seen_ids()
+
+    def _get_dialog(self, chat_id):
+        """Get dialog information for a chat."""
+        try:
+            dialogs = get_messages_controller().dialogs_dict
+            if dialogs and chat_id in dialogs:
+                return dialogs[chat_id]
+            
+            # Fallback: try getting from all dialogs
+            all_dialogs = get_messages_controller().getAllDialogs()
+            if all_dialogs:
+                for i in range(all_dialogs.size()):
+                    dialog = all_dialogs.get(i)
+                    if dialog and self._get_id_from_peer(dialog.id) == chat_id:
+                        return dialog
+        except Exception as e:
+            log(f"[{self.id}] Error getting dialog for {chat_id}: {e}")
+        return None
+
+    def _get_unread_boundary(self, chat_id):
+        """Gets the boundary for unread messages - max of Telegram's read_inbox_max_id and plugin's last_seen_inbox_id."""
+        dialog = self._get_dialog(chat_id)
+        telegram_read_id = getattr(dialog, 'read_inbox_max_id', 0) if dialog else 0
+        plugin_last_seen = self.last_seen_inbox_ids.get(chat_id, 0)
+        boundary = max(telegram_read_id, plugin_last_seen)
+        log(f"[{self.id}] Unread boundary for chat {chat_id}: Telegram={telegram_read_id}, Plugin={plugin_last_seen}, Boundary={boundary}")
+        return boundary
+
+    def _clamp_historical_days(self, days):
+        """Clamps the number of days to valid range."""
+        return max(MIN_HISTORICAL_DAYS, min(MAX_HISTORICAL_DAYS, days))
 
     # --- Core Logic: Sequential Processing ---
     def _worker_loop(self):
@@ -529,16 +584,19 @@ class AutoForwarderPlugin(BasePlugin):
         if not self._is_message_allowed_by_filters(message_object, rule):
             return
 
-        # Filter by keywords/regex
+        # Filter by keywords/regex (local and global)
         keyword_pattern = rule.get("keyword_pattern", "").strip()
-        if keyword_pattern:
+        use_global_regex = rule.get("use_global_regex", False)
+        global_pattern = self.get_setting(GLOBAL_KEYWORD_PATTERN, "").strip()
+        
+        if keyword_pattern or (use_global_regex and global_pattern):
             text_to_check = message.message or ""
             if message_object.isDocument():
                 doc = getattr(message.media, 'document', None)
                 filename = self._get_document_filename(doc)
                 if filename:
                     text_to_check = f"{text_to_check} {filename}".strip()
-            if not self._passes_keyword_filter(text_to_check, keyword_pattern):
+            if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
                 return
         
         # Filter by message length
@@ -644,7 +702,13 @@ class AutoForwarderPlugin(BasePlugin):
                 if entities and not entities.isEmpty():
                     req.entities = entities
                     req.flags |= 8
-                send_request(req, RequestCallback(lambda r, e: None))
+                
+                source_chat_id = self._get_id_from_peer(message.peer_id)
+                def handle_send_result(response, error):
+                    if not error and response:
+                        self._update_last_seen_id(source_chat_id, message.id)
+                
+                send_request(req, RequestCallback(handle_send_result))
         except Exception:
             log(f"[{self.id}] ERROR in _send_forwarded_message: {traceback.format_exc()}")
             
@@ -657,10 +721,12 @@ class AutoForwarderPlugin(BasePlugin):
         quote_replies = rule.get("quote_replies", True)
         filters = rule.get("filters", {})
         keyword_pattern = rule.get("keyword_pattern", "").strip()
+        use_global_regex = rule.get("use_global_regex", False)
+        global_pattern = self.get_setting(GLOBAL_KEYWORD_PATTERN, "").strip()
         topic_id = rule.get("destination_topic_id", 0)
 
         try:
-            if keyword_pattern:
+            if keyword_pattern or (use_global_regex and global_pattern):
                 full_text_to_check = ""
                 for msg_obj in message_objects:
                     msg = msg_obj.messageOwner
@@ -670,7 +736,7 @@ class AutoForwarderPlugin(BasePlugin):
                         doc = getattr(msg.media, 'document', None)
                         filename = self._get_document_filename(doc)
                         if filename: full_text_to_check += f" {filename}"
-                if not self._passes_keyword_filter(full_text_to_check.strip(), keyword_pattern): return
+                if not self._passes_combined_keyword_filter(full_text_to_check.strip(), keyword_pattern, use_global_regex, global_pattern): return
 
             req = TLRPC.TL_messages_sendMultiMedia()
             req.peer = get_messages_controller().getInputPeer(to_peer_id)
@@ -834,6 +900,303 @@ class AutoForwarderPlugin(BasePlugin):
             if entity and isinstance(entity, TLRPC.TL_user): self._add_user_entities(entities, text, entity, name)
         return text, entities
 
+    # --- Unread and Historical Processing ---
+    def _get_unread_messages_after_boundary(self, chat_id, boundary, limit=500):
+        """Fetches unread messages after the boundary for a chat."""
+        import threading
+        messages = []
+        response_received = threading.Event()
+        
+        def on_response(response, error):
+            nonlocal messages
+            if not error and response and hasattr(response, 'messages'):
+                all_messages = [response.messages.get(i) for i in range(response.messages.size())]
+                # Filter to only messages newer than boundary
+                messages = [msg for msg in all_messages if msg and msg.id > boundary]
+                log(f"[{self.id}] Retrieved {len(all_messages)} total messages, {len(messages)} unread after boundary {boundary}")
+            else:
+                log(f"[{self.id}] Error getting unread messages: {error}")
+            response_received.set()
+        
+        req = TLRPC.TL_messages_getHistory()
+        req.peer = get_messages_controller().getInputPeer(chat_id)
+        req.offset_id = 0  # Start from most recent
+        req.limit = limit
+        req.offset_date = req.add_offset = req.max_id = req.min_id = req.hash = 0
+        
+        send_request(req, RequestCallback(on_response))
+        
+        if not response_received.wait(15):
+            log(f"[{self.id}] TIMEOUT getting unread messages for chat {chat_id}")
+        
+        return messages
+
+    def _would_message_pass_filters(self, message_obj, chat_id):
+        """Checks if a message would pass all filters without sending it."""
+        try:
+            rule = self.forwarding_rules.get(chat_id)
+            if not rule:
+                return False
+            
+            message = message_obj.messageOwner
+            
+            # Check author type
+            author_type = self._get_author_type(message)
+            if author_type == "outgoing" and not rule.get("forward_outgoing", True):
+                return False
+            if author_type == "user" and not rule.get("forward_users", True):
+                return False
+            if author_type == "bot" and not rule.get("forward_bots", True):
+                return False
+            
+            # Check author filter
+            author_filter = rule.get("author_filter", "").strip()
+            if author_filter and (author_type == "user" or author_type == "bot"):
+                author_id = self._get_id_from_peer(message.from_id)
+                author_entity = self._get_chat_entity(author_id)
+                allowed_authors = [t.strip().lower().lstrip('@') for t in author_filter.split(',') if t.strip()]
+                match_found = False
+                if str(author_id) in allowed_authors:
+                    match_found = True
+                if not match_found and author_entity and hasattr(author_entity, 'username') and author_entity.username:
+                    if author_entity.username.lower() in allowed_authors:
+                        match_found = True
+                if not match_found:
+                    return False
+            
+            # Check content type filters using MessageObject methods
+            if not self._is_message_allowed_by_filters(message_obj, rule):
+                return False
+            
+            # Check keyword filter
+            keyword_pattern = rule.get("keyword_pattern", "").strip()
+            use_global_regex = rule.get("use_global_regex", False)
+            global_pattern = self.get_setting(GLOBAL_KEYWORD_PATTERN, "").strip()
+            
+            if keyword_pattern or (use_global_regex and global_pattern):
+                text_to_check = message.message or ""
+                # Include document filename in keyword check (consistent with live processing)
+                if message_obj.isDocument():
+                    doc = getattr(message.media, 'document', None)
+                    if doc:
+                        filename = self._get_document_filename(doc)
+                        if filename:
+                            text_to_check = f"{text_to_check} {filename}".strip()
+                if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
+                    return False
+            
+            # Check length
+            is_text_based = not message.media or isinstance(message.media, (TLRPC.TL_messageMediaEmpty, TLRPC.TL_messageMediaWebPage))
+            if is_text_based:
+                if not (self.min_msg_length <= len(message.message or "") <= self.max_msg_length):
+                    return False
+            
+            return True
+        except Exception:
+            log(f"[{self.id}] ERROR in _would_message_pass_filters: {traceback.format_exc()}")
+            return False
+
+    def _process_unread_messages(self, chat_id):
+        """Processes unread messages for a single chat."""
+        try:
+            rule = self.forwarding_rules.get(chat_id)
+            if not rule:
+                log(f"[{self.id}] No rule found for chat {chat_id}")
+                return {"success": False, "processed": 0, "error": "No rule configured"}
+            
+            boundary = self._get_unread_boundary(chat_id)
+            messages = self._get_unread_messages_after_boundary(chat_id, boundary, limit=500)
+            
+            if not messages:
+                log(f"[{self.id}] No unread messages found for chat {chat_id}")
+                return {"success": True, "processed": 0, "error": None}
+            
+            # Sort oldest first
+            messages.sort(key=lambda m: m.id)
+            
+            processed = 0
+            for msg in messages:
+                try:
+                    # Create MessageObject for proper processing
+                    msg_obj = self._create_message_object_safely(msg)
+                    if not msg_obj:
+                        continue
+                    
+                    # Check if message would pass all filters
+                    if self._would_message_pass_filters(msg_obj, chat_id):
+                        self._send_forwarded_message(msg_obj, rule)
+                        processed += 1
+                        time.sleep(0.5)  # Small delay to avoid spam
+                except Exception:
+                    log(f"[{self.id}] ERROR processing message {msg.id}: {traceback.format_exc()}")
+            
+            log(f"[{self.id}] Processed {processed} unread messages for chat {chat_id}")
+            return {"success": True, "processed": processed, "error": None}
+        except Exception as e:
+            log(f"[{self.id}] ERROR in _process_unread_messages: {traceback.format_exc()}")
+            return {"success": False, "processed": 0, "error": str(e)}
+
+    def _get_message_batch(self, chat_id, offset_id, limit=100):
+        """Gets a batch of messages from chat history."""
+        import threading
+        messages = []
+        response_received = threading.Event()
+        
+        def on_response(response, error):
+            nonlocal messages
+            if not error and response and hasattr(response, 'messages'):
+                messages = [response.messages.get(i) for i in range(response.messages.size())]
+                log(f"[{self.id}] Retrieved {len(messages)} messages from batch")
+            else:
+                log(f"[{self.id}] Error getting message batch: {error}")
+            response_received.set()
+        
+        req = TLRPC.TL_messages_getHistory()
+        req.peer = get_messages_controller().getInputPeer(chat_id)
+        req.offset_id = offset_id
+        req.offset_date = req.add_offset = req.max_id = req.min_id = req.hash = 0
+        req.limit = limit
+        
+        send_request(req, RequestCallback(on_response))
+        
+        if not response_received.wait(15):
+            log(f"[{self.id}] TIMEOUT getting message batch for chat {chat_id}")
+        
+        return messages
+
+    def _scan_chat_history(self, chat_id, cutoff_timestamp):
+        """Scans chat history up to cutoff timestamp."""
+        messages = []
+        offset_id = 0
+        
+        while True:
+            batch = self._get_message_batch(chat_id, offset_id, limit=100)
+            if not batch:
+                break
+            
+            for msg in batch:
+                if msg.date < cutoff_timestamp:
+                    return messages  # Stop when we reach cutoff
+                messages.append(msg)
+            
+            # Update offset for next batch (non-overlapping pagination)
+            new_min_id = min(msg.id for msg in batch)
+            new_offset_id = new_min_id - 1
+            
+            # Prevent infinite loop if offset doesn't change or goes backwards
+            if new_offset_id <= 0 or (offset_id > 0 and new_offset_id >= offset_id):
+                break
+            
+            offset_id = new_offset_id
+            
+            time.sleep(0.5)  # Rate limiting
+        
+        return messages
+
+    def _process_historical_messages(self, chat_id, days):
+        """Processes historical messages for a single chat going back X days."""
+        try:
+            rule = self.forwarding_rules.get(chat_id)
+            if not rule:
+                log(f"[{self.id}] No rule found for chat {chat_id}")
+                return {"success": False, "processed": 0, "error": "No rule configured"}
+            
+            cutoff_timestamp = int(time.time()) - (days * 24 * 60 * 60)
+            messages = self._scan_chat_history(chat_id, cutoff_timestamp)
+            
+            if not messages:
+                log(f"[{self.id}] No historical messages found for chat {chat_id}")
+                return {"success": True, "processed": 0, "error": None}
+            
+            # Sort oldest first
+            messages.sort(key=lambda m: m.id)
+            
+            processed = 0
+            for msg in messages:
+                try:
+                    # Create MessageObject for proper processing
+                    msg_obj = self._create_message_object_safely(msg)
+                    if not msg_obj:
+                        continue
+                    
+                    # Check if message would pass all filters
+                    if self._would_message_pass_filters(msg_obj, chat_id):
+                        self._send_forwarded_message(msg_obj, rule)
+                        processed += 1
+                        time.sleep(0.5)  # Small delay to avoid spam
+                except Exception:
+                    log(f"[{self.id}] ERROR processing message {msg.id}: {traceback.format_exc()}")
+            
+            log(f"[{self.id}] Processed {processed} historical messages for chat {chat_id}")
+            return {"success": True, "processed": processed, "error": None}
+        except Exception as e:
+            log(f"[{self.id}] ERROR in _process_historical_messages: {traceback.format_exc()}")
+            return {"success": False, "processed": 0, "error": str(e)}
+
+    def _get_current_account_safely(self):
+        """Get current account ID safely."""
+        try:
+            user_config = get_user_config()
+            if user_config:
+                account = user_config.getCurrentAccount()
+                if account is not None:
+                    return int(account)
+        except Exception:
+            log(f"[{self.id}] Could not get current account: {traceback.format_exc()}")
+        return 0
+
+    def _create_message_object_safely(self, message):
+        """Creates a MessageObject from a TLRPC message."""
+        try:
+            if not message:
+                return None
+            
+            # Validate required message attributes
+            required_attrs = ['id', 'date', 'peer_id']
+            for attr in required_attrs:
+                if not hasattr(message, attr) or getattr(message, attr) is None:
+                    return None
+            
+            current_account = self._get_current_account_safely()
+            
+            # Try different MessageObject constructor parameters
+            try:
+                message_obj = MessageObject(current_account, message, True, True)
+                return message_obj
+            except Exception:
+                try:
+                    return MessageObject(current_account, message, False, False)
+                except Exception:
+                    try:
+                        return MessageObject(current_account, message, True)
+                    except Exception:
+                        return None
+        except Exception:
+            log(f"[{self.id}] ERROR in _create_message_object_safely: {traceback.format_exc()}")
+        
+        return None
+
+    def _passes_combined_keyword_filter(self, text_to_check, local_pattern, use_global, global_pattern):
+        """Checks if text passes both local and global regex filters."""
+        if not local_pattern and not (use_global and global_pattern):
+            return True
+        
+        if not text_to_check:
+            return False
+        
+        # Check local pattern
+        local_pass = True
+        if local_pattern:
+            local_pass = self._passes_keyword_filter(text_to_check, local_pattern)
+        
+        # Check global pattern
+        global_pass = True
+        if use_global and global_pattern:
+            global_pass = self._passes_keyword_filter(text_to_check, global_pattern)
+        
+        # Both must pass (logical AND)
+        return local_pass and global_pass
+
     # --- UI & Dialog Methods ---
     def create_settings(self) -> list:
         """Creates the list of UI components for the main plugin settings screen."""
@@ -848,6 +1211,11 @@ class AutoForwarderPlugin(BasePlugin):
             Input(key="min_msg_length", text="Minimum Message Length", default=str(DEFAULT_SETTINGS["min_msg_length"]), subtext="For text-only messages."),
             Input(key="max_msg_length", text="Maximum Message Length", default=str(DEFAULT_SETTINGS["max_msg_length"]), subtext="For text-only messages."),
             Input(key="antispam_delay_seconds", text="Anti-Spam Delay (Seconds)", default=str(DEFAULT_SETTINGS["antispam_delay_seconds"]), subtext="Minimum time between forwards from the same user. 0 to disable."),
+            Input(key=GLOBAL_KEYWORD_PATTERN, text="Global Keyword/Regex Filter (optional)", default="", subtext="Apply this filter to all rules that enable 'use global regex'."),
+            Divider(),
+            Header(text="Global Actions"),
+            Text(text="Fwd Unread (All Rules)", icon="msg_unread", accent=True, on_click=lambda v: self._forward_unread_all_rules()),
+            Text(text="Fwd Last X Days (All Rules)", icon="msg_calendar", accent=True, on_click=lambda v: self._forward_historical_all_rules()),
             Divider(),
             Header(text="Active Forwarding Rules")
         ]
@@ -883,7 +1251,9 @@ class AutoForwarderPlugin(BasePlugin):
 
     def _add_chat_menu_item(self):
         """Adds the 'Auto Forward...' option to the chat three-dots menu."""
-        self.add_menu_item(MenuItemData(menu_type=MenuItemType.CHAT_ACTION_MENU, text="Auto Forward...", icon="msg_forward", on_click=self._on_menu_item_click))
+        self.add_menu_item(MenuItemData(menu_type=MenuItemType.CHAT_ACTION_MENU, text="Auto Fwd...", icon="msg_forward", on_click=self._on_menu_item_click))
+        self.add_menu_item(MenuItemData(menu_type=MenuItemType.CHAT_ACTION_MENU, text="Process Unread Messages", icon="msg_unread", on_click=self._on_process_unread_click))
+        self.add_menu_item(MenuItemData(menu_type=MenuItemType.CHAT_ACTION_MENU, text="Process Messages from Date", icon="msg_calendar", on_click=self._on_process_historical_click))
 
     def _on_menu_item_click(self, context):
         """Handles clicks on the 'Auto Forward...' menu item."""
@@ -895,6 +1265,80 @@ class AutoForwarderPlugin(BasePlugin):
         else:
             source_name = self._get_chat_name(current_chat_id)
             run_on_ui_thread(lambda: self._show_destination_input_dialog(current_chat_id, source_name))
+
+    def _on_process_unread_click(self, context):
+        """Handles clicks on the 'Process Unread Messages' menu item."""
+        current_chat_id = context.get("dialog_id")
+        if not current_chat_id:
+            return
+        current_chat_id = int(current_chat_id)
+        
+        if current_chat_id not in self.forwarding_rules:
+            BulletinHelper.show_error("No forwarding rule configured for this chat.", get_last_fragment())
+            return
+        
+        BulletinHelper.show_info("Processing unread messages...", get_last_fragment())
+        
+        def process():
+            result = self._process_unread_messages(current_chat_id)
+            if result["success"]:
+                BulletinHelper.show_info(f"Processed {result['processed']} unread messages!", get_last_fragment())
+            else:
+                BulletinHelper.show_error(f"Error: {result['error']}", get_last_fragment())
+        
+        threading.Thread(target=process, daemon=True).start()
+
+    def _on_process_historical_click(self, context):
+        """Handles clicks on the 'Process Messages from Date' menu item."""
+        current_chat_id = context.get("dialog_id")
+        if not current_chat_id:
+            return
+        current_chat_id = int(current_chat_id)
+        
+        if current_chat_id not in self.forwarding_rules:
+            BulletinHelper.show_error("No forwarding rule configured for this chat.", get_last_fragment())
+            return
+        
+        activity = get_last_fragment().getParentActivity()
+        if not activity:
+            return
+        
+        builder = AlertDialogBuilder(activity)
+        builder.set_title("Process Historical Messages")
+        builder.set_message("Enter the number of days to look back (1-30):")
+        
+        days_input = EditText(activity)
+        days_input.setInputType(InputType.TYPE_CLASS_NUMBER)
+        days_input.setText("7")
+        days_input.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
+        
+        frame = FrameLayout(activity)
+        margin_px = int(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 20, activity.getResources().getDisplayMetrics()))
+        frame.setPadding(margin_px, margin_px // 2, margin_px, margin_px // 2)
+        frame.addView(days_input)
+        builder.set_view(frame)
+        
+        def on_proceed(d, w):
+            try:
+                days_str = days_input.getText().toString()
+                days = self._clamp_historical_days(int(days_str))
+                
+                BulletinHelper.show_info(f"Processing last {days} days...", get_last_fragment())
+                
+                def process():
+                    result = self._process_historical_messages(current_chat_id, days)
+                    if result["success"]:
+                        BulletinHelper.show_info(f"Processed {result['processed']} messages from last {days} days!", get_last_fragment())
+                    else:
+                        BulletinHelper.show_error(f"Error: {result['error']}", get_last_fragment())
+                
+                threading.Thread(target=process, daemon=True).start()
+            except ValueError:
+                BulletinHelper.show_error("Please enter a valid number.", get_last_fragment())
+        
+        builder.set_positive_button("Proceed", on_proceed)
+        builder.set_negative_button("Cancel", None)
+        run_on_ui_thread(builder.show)
 
     def _show_rule_action_dialog(self, source_id):
         """Shows a dialog to Modify, Cancel, or Delete an existing rule."""
@@ -965,6 +1409,13 @@ class AutoForwarderPlugin(BasePlugin):
             checkbox_tint_list = ColorStateList([[-16842912], [16842912]], [Theme.getColor(Theme.key_checkbox), Theme.getColor(Theme.key_checkboxCheck)])
             checkbox_params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             checkbox_params.setMargins(margin_px, 0, margin_px, 0)
+            
+            use_global_regex_checkbox = CheckBox(activity)
+            use_global_regex_checkbox.setText("Also apply global regex filter")
+            use_global_regex_checkbox.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
+            use_global_regex_checkbox.setButtonTintList(checkbox_tint_list)
+            use_global_regex_checkbox.setLayoutParams(checkbox_params)
+            main_layout.addView(use_global_regex_checkbox)
     
             drop_author_checkbox = CheckBox(activity)
             drop_author_checkbox.setText("Remove Original Author (Copy)")
@@ -977,7 +1428,7 @@ class AutoForwarderPlugin(BasePlugin):
             quote_replies_checkbox.setLayoutParams(checkbox_params); main_layout.addView(quote_replies_checkbox)
     
             forward_to_topic_checkbox = CheckBox(activity)
-            forward_to_topic_checkbox.setText("Forward to Topic / Comment Thread")
+            forward_to_topic_checkbox.setText("Fwd to Topic / Comment Thread")
             forward_to_topic_checkbox.setTextColor(Theme.getColor(Theme.key_dialogTextBlack)); forward_to_topic_checkbox.setButtonTintList(checkbox_tint_list)
             forward_to_topic_checkbox.setLayoutParams(checkbox_params); main_layout.addView(forward_to_topic_checkbox)
     
@@ -1002,7 +1453,7 @@ class AutoForwarderPlugin(BasePlugin):
             divider_one = View(activity); divider_one.setBackgroundColor(Theme.getColor(Theme.key_divider)); divider_one.setLayoutParams(divider_params); main_layout.addView(divider_one)
     
             author_header = TextView(activity)
-            author_header.setText("Forward messages from:")
+            author_header.setText("Fwd messages from:")
             author_header.setTextColor(Theme.getColor(Theme.key_dialogTextBlack)); author_header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16)
             author_header_params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             author_header_params.setMargins(margin_px, 0, margin_px, margin_px // 4); author_header.setLayoutParams(author_header_params); main_layout.addView(author_header)
@@ -1039,7 +1490,7 @@ class AutoForwarderPlugin(BasePlugin):
             divider_two = View(activity); divider_two.setBackgroundColor(Theme.getColor(Theme.key_divider)); divider_two.setLayoutParams(divider_params); main_layout.addView(divider_two)
     
             filter_header = TextView(activity)
-            filter_header.setText("Content to forward:")
+            filter_header.setText("Content to fwd:")
             filter_header.setTextColor(Theme.getColor(Theme.key_dialogTextBlack)); filter_header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16)
             filter_header_params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             filter_header_params.setMargins(margin_px, 0, margin_px, 0); filter_header.setLayoutParams(filter_header_params); main_layout.addView(filter_header)
@@ -1061,6 +1512,7 @@ class AutoForwarderPlugin(BasePlugin):
                     topic_id_input.setText(str(existing_topic_id))
     
                 keyword_filter_input.setText(existing_rule.get("keyword_pattern", "")); author_filter_input.setText(existing_rule.get("author_filter", ""))
+                use_global_regex_checkbox.setChecked(existing_rule.get("use_global_regex", False))
                 drop_author_checkbox.setChecked(existing_rule.get("drop_author", True)); quote_replies_checkbox.setChecked(existing_rule.get("quote_replies", True))
                 forward_users_checkbox.setChecked(existing_rule.get("forward_users", True)); forward_bots_checkbox.setChecked(existing_rule.get("forward_bots", True))
                 forward_outgoing_checkbox.setChecked(existing_rule.get("forward_outgoing", True))
@@ -1081,6 +1533,7 @@ class AutoForwarderPlugin(BasePlugin):
                 self._process_destination_input(
                     source_id, source_name, input_field.getText().toString(),
                     keyword_filter_input.getText().toString(), author_filter_input.getText().toString(),
+                    use_global_regex_checkbox.isChecked(),
                     drop_author_checkbox.isChecked(), quote_replies_checkbox.isChecked(),
                     forward_to_topic_checkbox.isChecked(), topic_id,
                     forward_users_checkbox.isChecked(), forward_bots_checkbox.isChecked(),
@@ -1092,6 +1545,7 @@ class AutoForwarderPlugin(BasePlugin):
     
             all_ui_elements = {
                 'input_field': input_field, 'keyword_filter_input': keyword_filter_input,
+                'use_global_regex_checkbox': use_global_regex_checkbox,
                 'drop_author_checkbox': drop_author_checkbox, 'quote_replies_checkbox': quote_replies_checkbox,
                 'forward_to_topic_checkbox': forward_to_topic_checkbox, 'topic_id_input': topic_id_input,
                 'author_filter_input': author_filter_input, 'forward_users_checkbox': forward_users_checkbox,
@@ -1115,6 +1569,7 @@ class AutoForwarderPlugin(BasePlugin):
             rule_settings = {
                 "keyword_pattern": ui_elements['keyword_filter_input'].getText().toString(),
                 "author_filter": ui_elements['author_filter_input'].getText().toString(),
+                "use_global_regex": ui_elements['use_global_regex_checkbox'].isChecked(),
                 "drop_author": ui_elements['drop_author_checkbox'].isChecked(),
                 "quote_replies": ui_elements['quote_replies_checkbox'].isChecked(),
                 "forward_to_topic": ui_elements['forward_to_topic_checkbox'].isChecked(),
@@ -1219,7 +1674,7 @@ class AutoForwarderPlugin(BasePlugin):
     # --- Rule Processing and Resolution ---
     def _process_destination_input(self, source_id, source_name, user_input, *args):
         """Processes the destination provided manually in the settings dialog."""
-        (keyword_pattern, author_filter, drop_author, quote_replies, forward_to_topic, 
+        (keyword_pattern, author_filter, use_global_regex, drop_author, quote_replies, forward_to_topic, 
          topic_id, forward_users, forward_bots, forward_outgoing, filter_settings) = args
 
         cleaned_input = (user_input or "").strip()
@@ -1228,9 +1683,9 @@ class AutoForwarderPlugin(BasePlugin):
             return
 
         rule_settings = {
-            "keyword_pattern": keyword_pattern, "author_filter": author_filter, "drop_author": drop_author, 
-            "quote_replies": quote_replies, "forward_to_topic": forward_to_topic, "destination_topic_id": topic_id,
-            "forward_users": forward_users, "forward_bots": forward_bots, 
+            "keyword_pattern": keyword_pattern, "author_filter": author_filter, "use_global_regex": use_global_regex,
+            "drop_author": drop_author, "quote_replies": quote_replies, "forward_to_topic": forward_to_topic, 
+            "destination_topic_id": topic_id, "forward_users": forward_users, "forward_bots": forward_bots, 
             "forward_outgoing": forward_outgoing, "filter_settings": filter_settings
         }
 
@@ -1346,6 +1801,7 @@ class AutoForwarderPlugin(BasePlugin):
             "quote_replies": rule_settings["quote_replies"],
             "destination_topic_id": topic_id,
             "keyword_pattern": rule_settings["keyword_pattern"],
+            "use_global_regex": rule_settings.get("use_global_regex", False),
             "author_filter": rule_settings["author_filter"],
             "forward_users": rule_settings["forward_users"],
             "forward_bots": rule_settings["forward_bots"],
@@ -1379,6 +1835,100 @@ class AutoForwarderPlugin(BasePlugin):
             self._save_forwarding_rules()
             BulletinHelper.show_info(f"Rule for '{source_name}' deleted.", get_last_fragment())
             self._refresh_settings_ui()
+
+    def _forward_unread_all_rules(self):
+        """Processes unread messages for all configured rules."""
+        if not self.forwarding_rules:
+            BulletinHelper.show_error("No rules configured.", get_last_fragment())
+            return
+        
+        BulletinHelper.show_info("Processing unread messages for all rules...", get_last_fragment())
+        
+        def process_all():
+            total_processed = 0
+            errors = []
+            
+            for chat_id in self.forwarding_rules.keys():
+                try:
+                    result = self._process_unread_messages(chat_id)
+                    if result["success"]:
+                        total_processed += result["processed"]
+                    else:
+                        chat_name = self._get_chat_name(chat_id)
+                        errors.append(f"{chat_name}: {result['error']}")
+                except Exception as e:
+                    chat_name = self._get_chat_name(chat_id)
+                    errors.append(f"{chat_name}: {str(e)}")
+            
+            if errors:
+                error_msg = f"Processed {total_processed} messages. Errors: " + "; ".join(errors[:3])
+                BulletinHelper.show_error(error_msg, get_last_fragment())
+            else:
+                BulletinHelper.show_info(f"Successfully processed {total_processed} unread messages!", get_last_fragment())
+        
+        threading.Thread(target=process_all, daemon=True).start()
+
+    def _forward_historical_all_rules(self):
+        """Prompts for days and processes historical messages for all configured rules."""
+        if not self.forwarding_rules:
+            BulletinHelper.show_error("No rules configured.", get_last_fragment())
+            return
+        
+        activity = get_last_fragment().getParentActivity()
+        if not activity:
+            return
+        
+        builder = AlertDialogBuilder(activity)
+        builder.set_title("Forward Historical Messages")
+        builder.set_message("Enter the number of days to look back (1-30):")
+        
+        days_input = EditText(activity)
+        days_input.setInputType(InputType.TYPE_CLASS_NUMBER)
+        days_input.setText("7")
+        days_input.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
+        
+        frame = FrameLayout(activity)
+        margin_px = int(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 20, activity.getResources().getDisplayMetrics()))
+        frame.setPadding(margin_px, margin_px // 2, margin_px, margin_px // 2)
+        frame.addView(days_input)
+        builder.set_view(frame)
+        
+        def on_proceed(d, w):
+            try:
+                days_str = days_input.getText().toString()
+                days = self._clamp_historical_days(int(days_str))
+                
+                BulletinHelper.show_info(f"Processing last {days} days for all rules...", get_last_fragment())
+                
+                def process_all():
+                    total_processed = 0
+                    errors = []
+                    
+                    for chat_id in self.forwarding_rules.keys():
+                        try:
+                            result = self._process_historical_messages(chat_id, days)
+                            if result["success"]:
+                                total_processed += result["processed"]
+                            else:
+                                chat_name = self._get_chat_name(chat_id)
+                                errors.append(f"{chat_name}: {result['error']}")
+                        except Exception as e:
+                            chat_name = self._get_chat_name(chat_id)
+                            errors.append(f"{chat_name}: {str(e)}")
+                    
+                    if errors:
+                        error_msg = f"Processed {total_processed} messages. Errors: " + "; ".join(errors[:3])
+                        BulletinHelper.show_error(error_msg, get_last_fragment())
+                    else:
+                        BulletinHelper.show_info(f"Successfully processed {total_processed} messages from last {days} days!", get_last_fragment())
+                
+                threading.Thread(target=process_all, daemon=True).start()
+            except ValueError:
+                BulletinHelper.show_error("Please enter a valid number.", get_last_fragment())
+        
+        builder.set_positive_button("Proceed", on_proceed)
+        builder.set_negative_button("Cancel", None)
+        run_on_ui_thread(builder.show)
 
     # --- Telegram API Utilities ---
     def _delete_message_by_id(self, chat_id, message_id):
