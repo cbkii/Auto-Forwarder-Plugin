@@ -1,6 +1,6 @@
 # Auto Forwarder Plugin
 
-[![Version](https://img.shields.io/badge/version-1.9.0-blue.svg)](https://github.com/0x11DFE/Auto-Forwarder-Plugin/releases)
+[![Version](https://img.shields.io/badge/version-1.9.9.9-blue.svg)](https://github.com/0x11DFE/Auto-Forwarder-Plugin/releases)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Telegram](https://img.shields.io/badge/author-%40T3SL4-blue.svg)](https://t.me/T3SL4)
 
@@ -51,6 +51,7 @@ An advanced plugin for **exteraGram** that gives you total control over message 
 
 * **Advanced Filtering Engine:**
     * **Keyword & Regex:** Forward messages, media captions, or **documents with filenames** that contain specific keywords or match a regular expression.
+    * **Global Regex Filter:** Set a global keyword/regex pattern in the settings that can be applied to multiple rules. Each rule can optionally enable "use global regex" in addition to its local filter.
     * **Granular Content Control:** The "Text" filter is now split into "Text Messages" and "Media Captions," allowing you to forward media while stripping its caption, and vice-versa.
     * **Author Whitelisting:** Filter messages based on the author type (Users, Bots, Outgoing), or provide a specific, comma-separated list of User IDs or `@usernames` to exclusively forward messages *only* from them.
 
@@ -58,6 +59,12 @@ An advanced plugin for **exteraGram** that gives you total control over message 
     * **Ordered Album Handling:** Automatically waits to collect all photos/videos in a gallery before sending them together as a single, correctly ordered album.
     * **Duplicate Notification Prevention:** A thread-safe deduplication system prevents client-side notification glitches from causing the same message to be forwarded multiple times.
     * **Anti-Spam Firewall:** A built-in rate-limiter prevents a single user from flooding your destination chat with rapid messages.
+    * **Persistent Last-Seen Tracking:** Tracks the last processed message for each chat to avoid reprocessing messages.
+
+* **Batch Processing:**
+    * **Process Unread Messages:** Forward all unread messages from a chat with a single click (available in chat menu).
+    * **Process Historical Messages:** Forward messages from the last X days (1-30) for any chat (available in chat menu).
+    * **Global Batch Actions:** Process unread or historical messages for all configured rules at once from the settings page.
 
 
 ## 🛠️ Installation
@@ -95,6 +102,12 @@ This plugin is configured entirely through the Telegram user interface.
 2.  Open the **Auto Forward...** menu item again.
 3.  A management dialog will appear, allowing you to **Modify** or **Delete** the rule for that chat.
 
+### Processing Unread or Historical Messages
+1.  Go into a chat with an active forwarding rule.
+2.  Tap the three-dots menu (**⋮**) in the top-right corner.
+3.  Select **Process Unread Messages** to forward all unread messages, or **Process Messages from Date** to forward messages from the last X days.
+4.  Alternatively, go to the plugin settings page and use the **"Forward Unread (All Rules)"** or **"Forward Last X Days (All Rules)"** buttons to process messages for all configured rules at once.
+
 ## ⚙️ Configuration
 
 All global settings and a list of all active rules can be found by going to:
@@ -104,8 +117,12 @@ Key settings include:
 - **Album Buffering Timeout (ms):** How long to wait to collect all media in an album.
 - **Sequential Delay (Seconds):** The pause between each message to guarantee order. Set to `0` to restore high-speed parallel mode (order not guaranteed).
 - **Deduplication Window (Seconds):** Time window to ignore duplicate notifications from the client.
+- **Global Keyword/Regex Filter:** An optional filter that can be applied to multiple rules. Enable "use global regex" in each rule to apply this filter in addition to the rule's local filter.
 
-At the bottom of this page, you will also find the **"Check for Updates"** button.
+You will also find:
+- **Forward Unread (All Rules):** Processes unread messages for all configured rules.
+- **Forward Last X Days (All Rules):** Processes historical messages (1-30 days) for all configured rules.
+- **Check for Updates:** Checks for new plugin versions on GitHub.
 
 
 ## 🤝 Contributing
