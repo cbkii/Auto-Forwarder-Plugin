@@ -334,11 +334,11 @@ class AutoForwarderPlugin(BasePlugin):
         self._load_configurable_settings()
         self._load_forwarding_rules()
         
-        # Register the message listener and add menu item on UI thread
+        # Add the chat menu item (BasePlugin handles UI thread internally if needed)
+        self._add_chat_menu_item()
+        
+        # Register the message listener on UI thread
         def register_observer():
-            # Add the chat menu item on UI thread to ensure it's properly registered
-            self._add_chat_menu_item()
-            
             account_instance = get_account_instance()
             if account_instance:
                 self.message_listener = self.MessageListener(self)
