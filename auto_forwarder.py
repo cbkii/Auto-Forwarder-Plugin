@@ -354,6 +354,8 @@ class AutoForwarderPlugin(BasePlugin):
                 self.message_listener = self.MessageListener(self)
                 account_instance.getNotificationCenter().addObserver(self.message_listener, NotificationCenter.didReceiveNewMessages)
                 log(f"[{self.id}] Message observer successfully registered.")
+            else:
+                log(f"[{self.id}] WARNING: Failed to register message observer - account_instance is None")
 
         run_on_ui_thread(register_observer)
 
