@@ -420,16 +420,6 @@ class AutoForwarderPlugin(BasePlugin):
         """Clamps the number of days to valid range."""
         return max(MIN_HISTORICAL_DAYS, min(MAX_HISTORICAL_DAYS, days))
 
-    def _wait_for_response(self, response_holder, timeout_seconds=10, operation_name="request"):
-        """Waits for an async response with timeout. Returns True if response received, False if timeout."""
-        for _ in range(timeout_seconds * 10):  # Check every 0.1s
-            if response_holder["done"]:
-                return True
-            time.sleep(0.1)
-        
-        log(f"[{self.id}] Timeout waiting for {operation_name} response")
-        return False
-
     # --- Core Logic: Sequential Processing ---
     def _worker_loop(self):
         """
@@ -898,36 +888,31 @@ class AutoForwarderPlugin(BasePlugin):
     # --- Unread and Historical Processing ---
     def _get_unread_messages_after_boundary(self, chat_id, boundary, limit=500):
         """Fetches unread messages after the boundary for a chat."""
+        import threading
         messages = []
-        try:
-            req = TLRPC.TL_messages_getHistory()
-            req.peer = get_messages_controller().getInputPeer(chat_id)
-            req.offset_id = 0
-            req.offset_date = 0
-            req.add_offset = 0
-            req.limit = limit
-            req.max_id = 0
-            req.min_id = boundary
-            req.hash = 0
-            
-            response_holder = {"response": None, "error": None, "done": False}
-            
-            def on_response(response, error):
-                response_holder["response"] = response
-                response_holder["error"] = error
-                response_holder["done"] = True
-            
-            send_request(req, RequestCallback(on_response))
-            
-            if not self._wait_for_response(response_holder, timeout_seconds=10, operation_name="unread messages"):
-                return messages
-            
-            if response_holder["response"] and hasattr(response_holder["response"], "messages"):
-                for msg in response_holder["response"].messages:
-                    if msg.id > boundary:
-                        messages.append(msg)
-        except Exception:
-            log(f"[{self.id}] ERROR fetching unread messages: {traceback.format_exc()}")
+        response_received = threading.Event()
+        
+        def on_response(response, error):
+            nonlocal messages
+            if not error and response and hasattr(response, 'messages'):
+                all_messages = [response.messages.get(i) for i in range(response.messages.size())]
+                # Filter to only messages newer than boundary
+                messages = [msg for msg in all_messages if msg and msg.id > boundary]
+                log(f"[{self.id}] Retrieved {len(all_messages)} total messages, {len(messages)} unread after boundary {boundary}")
+            else:
+                log(f"[{self.id}] Error getting unread messages: {error}")
+            response_received.set()
+        
+        req = TLRPC.TL_messages_getHistory()
+        req.peer = get_messages_controller().getInputPeer(chat_id)
+        req.offset_id = 0  # Start from most recent
+        req.limit = limit
+        req.offset_date = req.add_offset = req.max_id = req.min_id = req.hash = 0
+        
+        send_request(req, RequestCallback(on_response))
+        
+        if not response_received.wait(15):
+            log(f"[{self.id}] TIMEOUT getting unread messages for chat {chat_id}")
         
         return messages
 
@@ -1038,35 +1023,31 @@ class AutoForwarderPlugin(BasePlugin):
 
     def _get_message_batch(self, chat_id, offset_id, limit=100):
         """Gets a batch of messages from chat history."""
-        try:
-            req = TLRPC.TL_messages_getHistory()
-            req.peer = get_messages_controller().getInputPeer(chat_id)
-            req.offset_id = offset_id
-            req.offset_date = 0
-            req.add_offset = 0
-            req.limit = limit
-            req.max_id = 0
-            req.min_id = 0
-            req.hash = 0
-            
-            response_holder = {"response": None, "error": None, "done": False}
-            
-            def on_response(response, error):
-                response_holder["response"] = response
-                response_holder["error"] = error
-                response_holder["done"] = True
-            
-            send_request(req, RequestCallback(on_response))
-            
-            if not self._wait_for_response(response_holder, timeout_seconds=10, operation_name="message batch"):
-                return []
-            
-            if response_holder["response"] and hasattr(response_holder["response"], "messages"):
-                return list(response_holder["response"].messages)
-        except Exception:
-            log(f"[{self.id}] ERROR fetching message batch: {traceback.format_exc()}")
+        import threading
+        messages = []
+        response_received = threading.Event()
         
-        return []
+        def on_response(response, error):
+            nonlocal messages
+            if not error and response and hasattr(response, 'messages'):
+                messages = [response.messages.get(i) for i in range(response.messages.size())]
+                log(f"[{self.id}] Retrieved {len(messages)} messages from batch")
+            else:
+                log(f"[{self.id}] Error getting message batch: {error}")
+            response_received.set()
+        
+        req = TLRPC.TL_messages_getHistory()
+        req.peer = get_messages_controller().getInputPeer(chat_id)
+        req.offset_id = offset_id
+        req.offset_date = req.add_offset = req.max_id = req.min_id = req.hash = 0
+        req.limit = limit
+        
+        send_request(req, RequestCallback(on_response))
+        
+        if not response_received.wait(15):
+            log(f"[{self.id}] TIMEOUT getting message batch for chat {chat_id}")
+        
+        return messages
 
     def _scan_chat_history(self, chat_id, cutoff_timestamp):
         """Scans chat history up to cutoff timestamp."""
