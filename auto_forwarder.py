@@ -706,92 +706,6 @@ class AutoForwarderPlugin(BasePlugin):
                 send_request(req, RequestCallback(handle_send_result))
         except Exception:
             log(f"[{self.id}] ERROR in _send_forwarded_message: {traceback.format_exc()}")
-
-    def _send_forwarded_message_from_tlrpc(self, message, rule):
-        """Sends a forwarded message directly from TLRPC message (used in batch processing)."""
-        if not message:
-            return
-        
-        to_peer_id = rule["destination"]
-        drop_author = rule.get("drop_author", True)
-        topic_id = rule.get("destination_topic_id", 0)
-        
-        try:
-            # Get input media directly from TLRPC message
-            input_media = None
-            if hasattr(message, 'media') and message.media:
-                if isinstance(message.media, TLRPC.TL_messageMediaPhoto) and hasattr(message.media, "photo"):
-                    photo = message.media.photo
-                    input_media = TLRPC.TL_inputMediaPhoto()
-                    input_media.id = TLRPC.TL_inputPhoto()
-                    input_media.id.id = photo.id
-                    input_media.id.access_hash = photo.access_hash
-                    input_media.id.file_reference = photo.file_reference or bytearray(0)
-                elif isinstance(message.media, TLRPC.TL_messageMediaDocument) and hasattr(message.media, "document"):
-                    doc = message.media.document
-                    input_media = TLRPC.TL_inputMediaDocument()
-                    input_media.id = TLRPC.TL_inputDocument()
-                    input_media.id.id = doc.id
-                    input_media.id.access_hash = doc.access_hash
-                    input_media.id.file_reference = doc.file_reference or bytearray(0)
-            
-            has_media = bool(input_media)
-            has_text = bool(message.message)
-            
-            original_text = ""
-            if has_text:
-                filters = rule.get("filters", {})
-                if has_media and filters.get("media_captions", True):
-                    original_text = message.message
-                elif not has_media and filters.get("text", True):
-                    original_text = message.message
-            original_entities = message.entities if original_text else None
-            
-            prefix_text, prefix_entities = "", ArrayList()
-            if not drop_author:
-                source_entity = self._get_chat_entity(self._get_id_from_peer(message.peer_id))
-                author_entity = self._get_chat_entity(self._get_id_from_peer(message.from_id))
-                if source_entity:
-                    header_text, header_entities = self._build_forward_header(message, source_entity, author_entity)
-                    if header_text:
-                        prefix_text += header_text
-                    if header_entities:
-                        prefix_entities.addAll(header_entities)
-            
-            # Note: quote_replies is skipped in batch processing as reply objects aren't fetched
-            
-            message_text = f"{prefix_text}\n\n{original_text}".strip()
-            entities = self._prepare_final_entities(prefix_text, prefix_entities, original_entities)
-            
-            req = None
-            if input_media:
-                req = TLRPC.TL_messages_sendMedia()
-                req.media = input_media
-                req.message = message_text
-            elif message_text.strip():
-                req = TLRPC.TL_messages_sendMessage()
-                req.message = message_text
-            
-            if req:
-                req.peer = get_messages_controller().getInputPeer(to_peer_id)
-                req.random_id = random.getrandbits(63)
-                if topic_id > 0:
-                    req.reply_to = TLRPC.TL_inputReplyToMessage()
-                    req.reply_to.reply_to_msg_id = topic_id
-                    req.flags |= 1
-                if entities and not entities.isEmpty():
-                    req.entities = entities
-                    req.flags |= 8
-                
-                source_chat_id = self._get_id_from_peer(message.peer_id)
-                
-                def handle_send_result(response, error):
-                    if not error and response:
-                        self._update_last_seen_id(source_chat_id, message.id)
-                
-                send_request(req, RequestCallback(handle_send_result))
-        except Exception:
-            log(f"[{self.id}] ERROR in _send_forwarded_message_from_tlrpc: {traceback.format_exc()}")
             
     def _send_album(self, message_objects, rule):
         """Constructs and sends a multi-media message (album)."""
@@ -1017,104 +931,70 @@ class AutoForwarderPlugin(BasePlugin):
         
         return messages
 
-    def _would_message_pass_filters(self, message, rule):
+    def _would_message_pass_filters(self, message_obj, chat_id):
         """Checks if a message would pass all filters without sending it."""
-        # Check author type
-        author_type = self._get_author_type(message)
-        if author_type == "outgoing" and not rule.get("forward_outgoing", True):
-            return False
-        if author_type == "user" and not rule.get("forward_users", True):
-            return False
-        if author_type == "bot" and not rule.get("forward_bots", True):
-            return False
-        
-        # Check author filter
-        author_filter = rule.get("author_filter", "").strip()
-        if author_filter and (author_type == "user" or author_type == "bot"):
-            author_id = self._get_id_from_peer(message.from_id)
-            author_entity = self._get_chat_entity(author_id)
-            allowed_authors = [t.strip().lower().lstrip('@') for t in author_filter.split(',') if t.strip()]
-            match_found = False
-            if str(author_id) in allowed_authors:
-                match_found = True
-            if not match_found and author_entity and hasattr(author_entity, 'username') and author_entity.username:
-                if author_entity.username.lower() in allowed_authors:
+        try:
+            rule = self.forwarding_rules.get(chat_id)
+            if not rule:
+                return False
+            
+            message = message_obj.messageOwner
+            
+            # Check author type
+            author_type = self._get_author_type(message)
+            if author_type == "outgoing" and not rule.get("forward_outgoing", True):
+                return False
+            if author_type == "user" and not rule.get("forward_users", True):
+                return False
+            if author_type == "bot" and not rule.get("forward_bots", True):
+                return False
+            
+            # Check author filter
+            author_filter = rule.get("author_filter", "").strip()
+            if author_filter and (author_type == "user" or author_type == "bot"):
+                author_id = self._get_id_from_peer(message.from_id)
+                author_entity = self._get_chat_entity(author_id)
+                allowed_authors = [t.strip().lower().lstrip('@') for t in author_filter.split(',') if t.strip()]
+                match_found = False
+                if str(author_id) in allowed_authors:
                     match_found = True
-            if not match_found:
-                return False
-        
-        # Check content type filters (directly on TLRPC message for batch processing)
-        filters = rule.get("filters", {})
-        if filters:
-            if hasattr(message, 'media') and message.media:
-                if isinstance(message.media, TLRPC.TL_messageMediaPhoto):
-                    if not filters.get("photos", True):
-                        return False
-                elif isinstance(message.media, TLRPC.TL_messageMediaDocument) and hasattr(message.media, 'document'):
-                    doc = message.media.document
-                    # Check document attributes to determine type
-                    is_voice = is_video_msg = is_sticker = is_gif = is_music = is_video = False
-                    if hasattr(doc, 'attributes'):
-                        for attr in doc.attributes:
-                            if isinstance(attr, TLRPC.TL_documentAttributeAudio):
-                                if getattr(attr, 'voice', False):
-                                    is_voice = True
-                                else:
-                                    is_music = True
-                            elif isinstance(attr, TLRPC.TL_documentAttributeVideo):
-                                if getattr(attr, 'round_message', False):
-                                    is_video_msg = True
-                                else:
-                                    is_video = True
-                            elif isinstance(attr, TLRPC.TL_documentAttributeSticker):
-                                is_sticker = True
-                            elif isinstance(attr, TLRPC.TL_documentAttributeAnimated):
-                                is_gif = True
-                    
-                    if is_voice and not filters.get("voice", True):
-                        return False
-                    elif is_video_msg and not filters.get("video_messages", True):
-                        return False
-                    elif is_sticker and not filters.get("stickers", True):
-                        return False
-                    elif is_gif and not filters.get("gifs", True):
-                        return False
-                    elif is_music and not filters.get("audio", True):
-                        return False
-                    elif is_video and not filters.get("videos", True):
-                        return False
-                    elif not (is_voice or is_video_msg or is_sticker or is_gif or is_music or is_video):
-                        # Regular document
-                        if not filters.get("documents", True):
-                            return False
-            else:
-                # Text message
-                if not filters.get("text", True):
+                if not match_found and author_entity and hasattr(author_entity, 'username') and author_entity.username:
+                    if author_entity.username.lower() in allowed_authors:
+                        match_found = True
+                if not match_found:
                     return False
-        
-        # Check keyword filter
-        keyword_pattern = rule.get("keyword_pattern", "").strip()
-        use_global_regex = rule.get("use_global_regex", False)
-        global_pattern = self.get_setting(GLOBAL_KEYWORD_PATTERN, "").strip()
-        
-        if keyword_pattern or (use_global_regex and global_pattern):
-            text_to_check = message.message or ""
-            # Include document filename in keyword check (consistent with live processing)
-            doc = getattr(getattr(message, 'media', None), 'document', None)
-            if doc:
-                filename = self._get_document_filename(doc)
-                if filename:
-                    text_to_check = f"{text_to_check} {filename}".strip()
-            if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
+            
+            # Check content type filters using MessageObject methods
+            if not self._is_message_allowed_by_filters(message_obj, rule):
                 return False
-        
-        # Check length
-        is_text_based = not message.media or isinstance(message.media, (TLRPC.TL_messageMediaEmpty, TLRPC.TL_messageMediaWebPage))
-        if is_text_based:
-            if not (self.min_msg_length <= len(message.message or "") <= self.max_msg_length):
-                return False
-        
-        return True
+            
+            # Check keyword filter
+            keyword_pattern = rule.get("keyword_pattern", "").strip()
+            use_global_regex = rule.get("use_global_regex", False)
+            global_pattern = self.get_setting(GLOBAL_KEYWORD_PATTERN, "").strip()
+            
+            if keyword_pattern or (use_global_regex and global_pattern):
+                text_to_check = message.message or ""
+                # Include document filename in keyword check (consistent with live processing)
+                if message_obj.isDocument():
+                    doc = getattr(message.media, 'document', None)
+                    if doc:
+                        filename = self._get_document_filename(doc)
+                        if filename:
+                            text_to_check = f"{text_to_check} {filename}".strip()
+                if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
+                    return False
+            
+            # Check length
+            is_text_based = not message.media or isinstance(message.media, (TLRPC.TL_messageMediaEmpty, TLRPC.TL_messageMediaWebPage))
+            if is_text_based:
+                if not (self.min_msg_length <= len(message.message or "") <= self.max_msg_length):
+                    return False
+            
+            return True
+        except Exception:
+            log(f"[{self.id}] ERROR in _would_message_pass_filters: {traceback.format_exc()}")
+            return False
 
     def _process_unread_messages(self, chat_id):
         """Processes unread messages for a single chat."""
@@ -1136,14 +1016,19 @@ class AutoForwarderPlugin(BasePlugin):
             
             processed = 0
             for msg in messages:
-                if self._would_message_pass_filters(msg, rule):
-                    try:
-                        # Send directly from TLRPC message (batch processing doesn't need MessageObject)
-                        self._send_forwarded_message_from_tlrpc(msg, rule)
+                try:
+                    # Create MessageObject for proper processing
+                    msg_obj = self._create_message_object_safely(msg)
+                    if not msg_obj:
+                        continue
+                    
+                    # Check if message would pass all filters
+                    if self._would_message_pass_filters(msg_obj, chat_id):
+                        self._send_forwarded_message(msg_obj, rule)
                         processed += 1
                         time.sleep(0.5)  # Small delay to avoid spam
-                    except Exception:
-                        log(f"[{self.id}] ERROR processing message {msg.id}: {traceback.format_exc()}")
+                except Exception:
+                    log(f"[{self.id}] ERROR processing message {msg.id}: {traceback.format_exc()}")
             
             log(f"[{self.id}] Processed {processed} unread messages for chat {chat_id}")
             return {"success": True, "processed": processed, "error": None}
@@ -1232,14 +1117,19 @@ class AutoForwarderPlugin(BasePlugin):
             
             processed = 0
             for msg in messages:
-                if self._would_message_pass_filters(msg, rule):
-                    try:
-                        # Send directly from TLRPC message (batch processing doesn't need MessageObject)
-                        self._send_forwarded_message_from_tlrpc(msg, rule)
+                try:
+                    # Create MessageObject for proper processing
+                    msg_obj = self._create_message_object_safely(msg)
+                    if not msg_obj:
+                        continue
+                    
+                    # Check if message would pass all filters
+                    if self._would_message_pass_filters(msg_obj, chat_id):
+                        self._send_forwarded_message(msg_obj, rule)
                         processed += 1
                         time.sleep(0.5)  # Small delay to avoid spam
-                    except Exception:
-                        log(f"[{self.id}] ERROR processing message {msg.id}: {traceback.format_exc()}")
+                except Exception:
+                    log(f"[{self.id}] ERROR processing message {msg.id}: {traceback.format_exc()}")
             
             log(f"[{self.id}] Processed {processed} historical messages for chat {chat_id}")
             return {"success": True, "processed": processed, "error": None}
@@ -1247,29 +1137,44 @@ class AutoForwarderPlugin(BasePlugin):
             log(f"[{self.id}] ERROR in _process_historical_messages: {traceback.format_exc()}")
             return {"success": False, "processed": 0, "error": str(e)}
 
-    def _create_message_object_safely(self, message, chat_id):
+    def _get_current_account_safely(self):
+        """Get current account ID safely."""
+        try:
+            user_config = get_user_config()
+            if user_config:
+                account = user_config.getCurrentAccount()
+                if account is not None:
+                    return int(account)
+        except Exception:
+            log(f"[{self.id}] Could not get current account: {traceback.format_exc()}")
+        return 0
+
+    def _create_message_object_safely(self, message):
         """Creates a MessageObject from a TLRPC message."""
         try:
-            # Try different MessageObject constructors with various parameter combinations
-            # The exact constructor signature varies across Telegram client versions
-            constructors = [
-                # Standard constructor with user ID and message
-                lambda: MessageObject(get_user_config().getClientUserId(), message, True, True),
-                lambda: MessageObject(get_user_config().getClientUserId(), message, False, False),
-                # Extended constructor with additional parameters for scheduling, groups, etc.
-                lambda: MessageObject(get_user_config().getClientUserId(), message, None, None, None, True, 0, 0, False)
-            ]
+            if not message:
+                return None
             
-            for constructor in constructors:
+            # Validate required message attributes
+            required_attrs = ['id', 'date', 'peer_id']
+            for attr in required_attrs:
+                if not hasattr(message, attr) or getattr(message, attr) is None:
+                    return None
+            
+            current_account = self._get_current_account_safely()
+            
+            # Try different MessageObject constructor parameters
+            try:
+                message_obj = MessageObject(current_account, message, True, True)
+                return message_obj
+            except Exception:
                 try:
-                    msg_obj = constructor()
-                    # Validate required attributes
-                    if hasattr(msg_obj, 'messageOwner') and msg_obj.messageOwner:
-                        return msg_obj
+                    return MessageObject(current_account, message, False, False)
                 except Exception:
-                    continue
-            
-            log(f"[{self.id}] Could not create MessageObject for message {message.id}")
+                    try:
+                        return MessageObject(current_account, message, True)
+                    except Exception:
+                        return None
         except Exception:
             log(f"[{self.id}] ERROR in _create_message_object_safely: {traceback.format_exc()}")
         
