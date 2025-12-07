@@ -404,17 +404,32 @@ class AutoForwarderPlugin(BasePlugin):
             self.last_seen_inbox_ids[chat_id] = message_id
             self._save_last_seen_ids()
 
-    def _get_unread_boundary(self, chat_id):
-        """Gets the unread boundary using max of read_inbox_max_id and plugin's last_seen_inbox_ids."""
+    def _get_dialog(self, chat_id):
+        """Get dialog information for a chat."""
         try:
-            chat_entity = self._get_chat_entity(chat_id)
-            if chat_entity:
-                read_inbox_max_id = getattr(chat_entity, 'read_inbox_max_id', 0)
-                plugin_last_seen = self.last_seen_inbox_ids.get(chat_id, 0)
-                return max(read_inbox_max_id, plugin_last_seen)
-        except Exception:
-            log(f"[{self.id}] ERROR getting unread boundary: {traceback.format_exc()}")
-        return self.last_seen_inbox_ids.get(chat_id, 0)
+            dialogs = get_messages_controller().dialogs_dict
+            if dialogs and chat_id in dialogs:
+                return dialogs[chat_id]
+            
+            # Fallback: try getting from all dialogs
+            all_dialogs = get_messages_controller().getAllDialogs()
+            if all_dialogs:
+                for i in range(all_dialogs.size()):
+                    dialog = all_dialogs.get(i)
+                    if dialog and self._get_id_from_peer(dialog.id) == chat_id:
+                        return dialog
+        except Exception as e:
+            log(f"[{self.id}] Error getting dialog for {chat_id}: {e}")
+        return None
+
+    def _get_unread_boundary(self, chat_id):
+        """Gets the boundary for unread messages - max of Telegram's read_inbox_max_id and plugin's last_seen_inbox_id."""
+        dialog = self._get_dialog(chat_id)
+        telegram_read_id = getattr(dialog, 'read_inbox_max_id', 0) if dialog else 0
+        plugin_last_seen = self.last_seen_inbox_ids.get(chat_id, 0)
+        boundary = max(telegram_read_id, plugin_last_seen)
+        log(f"[{self.id}] Unread boundary for chat {chat_id}: Telegram={telegram_read_id}, Plugin={plugin_last_seen}, Boundary={boundary}")
+        return boundary
 
     def _clamp_historical_days(self, days):
         """Clamps the number of days to valid range."""
