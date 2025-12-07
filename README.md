@@ -33,6 +33,8 @@ An advanced plugin for **exteraGram** that gives you total control over message 
 
 This fork extends the original v1.9.0 release with powerful batch processing capabilities and enhanced filtering options:
 
+> **📌 Note:** This is version **1.9.9.9** of the fork. The built-in auto-updater still points to the original repository and may show "v1.9.0" as the latest version. To stay updated with fork-specific features, bookmark this repository and check the [Releases](https://github.com/cbkii/Auto-Forwarder-Plugin/releases) page.
+
 ### New Features Added in This Fork:
 
 * **📬 Batch Processing - Unread Messages:**
@@ -119,7 +121,11 @@ All features from the upstream v1.9.0 release are included, such as:
 4.  Tap on the file you just sent within the Telegram app.
 5.  A confirmation dialog will appear. Tap **INSTALL PLUGIN** to finish.
 
-> **Note:** After the first installation, the plugin can update itself using the built-in updater. However, the auto-updater currently points to the original repository. Future updates from this fork may need to be installed manually until the updater is configured to use this fork's releases.
+> **⚠️ Important Note About Updates:** The auto-updater built into this plugin currently points to the original repository by @T3SL4. This means:
+> - The "Check for Updates" button will check the original repository, not this fork
+> - You may see update notifications for older versions (like v1.9.0) even though you're on v1.9.9.9
+> - To get fork-specific updates, you'll need to manually download new versions from this fork's [Releases](https://github.com/cbkii/Auto-Forwarder-Plugin/releases) page
+> - Future versions of this fork may redirect the auto-updater to check this fork's releases instead
 
 ## 📖 How to Use
 
@@ -178,7 +184,7 @@ All global settings and a list of all active rules can be found by going to:
 - **🆕 Fwd Last X Days (All Rules):** Processes historical messages (1-30 days) for all configured rules at once.
 
 ### Other Actions:
-- **Check for Updates:** Checks for new plugin versions on GitHub (currently checks the original repository).
+- **Check for Updates:** Checks for new plugin versions on GitHub. ⚠️ **Note:** Currently checks the original repository by @T3SL4, not this fork. To get fork-specific updates (v1.9.9.9+), check the [Releases](https://github.com/cbkii/Auto-Forwarder-Plugin/releases) page manually.
 
 ### Per-Rule Settings:
 When creating or editing a rule, you can configure:
