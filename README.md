@@ -1,4 +1,4 @@
-# Auto Forwarder Plugin
+# Auto Fwd Plugin Fork
 
 [![Version](https://img.shields.io/badge/version-1.9.9.9-blue.svg)](https://github.com/0x11DFE/Auto-Forwarder-Plugin/releases)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
