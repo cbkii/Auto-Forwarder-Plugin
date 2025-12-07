@@ -964,6 +964,12 @@ class AutoForwarderPlugin(BasePlugin):
         
         if keyword_pattern or (use_global_regex and global_pattern):
             text_to_check = message.message or ""
+            # Include document filename in keyword check (consistent with live processing)
+            doc = getattr(getattr(message, 'media', None), 'document', None)
+            if doc:
+                filename = self._get_document_filename(doc)
+                if filename:
+                    text_to_check = f"{text_to_check} {filename}".strip()
             if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
                 return False
         
