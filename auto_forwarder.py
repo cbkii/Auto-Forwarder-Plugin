@@ -903,11 +903,15 @@ class AutoForwarderPlugin(BasePlugin):
             
             send_request(req, RequestCallback(on_response))
             
-            # Wait for response (max 10 seconds)
-            wait_time = 0
-            while not response_holder["done"] and wait_time < 10:
+            # Wait for response with timeout (max 10 seconds)
+            for _ in range(100):  # 100 * 0.1s = 10s
+                if response_holder["done"]:
+                    break
                 time.sleep(0.1)
-                wait_time += 0.1
+            
+            if not response_holder["done"]:
+                log(f"[{self.id}] Timeout waiting for unread messages response")
+                return messages
             
             if response_holder["response"] and hasattr(response_holder["response"], "messages"):
                 for msg in response_holder["response"].messages:
@@ -1021,11 +1025,15 @@ class AutoForwarderPlugin(BasePlugin):
             
             send_request(req, RequestCallback(on_response))
             
-            # Wait for response (max 10 seconds)
-            wait_time = 0
-            while not response_holder["done"] and wait_time < 10:
+            # Wait for response with timeout (max 10 seconds)
+            for _ in range(100):  # 100 * 0.1s = 10s
+                if response_holder["done"]:
+                    break
                 time.sleep(0.1)
-                wait_time += 0.1
+            
+            if not response_holder["done"]:
+                log(f"[{self.id}] Timeout waiting for message batch response")
+                return []
             
             if response_holder["response"] and hasattr(response_holder["response"], "messages"):
                 return list(response_holder["response"].messages)
@@ -1050,11 +1058,17 @@ class AutoForwarderPlugin(BasePlugin):
                 messages.append(msg)
             
             # Update offset for next batch (non-overlapping pagination)
-            min_id = min(msg.id for msg in batch)
-            offset_id = min_id - 1
-            
-            if offset_id <= 0:
+            if not batch:
                 break
+            
+            new_min_id = min(msg.id for msg in batch)
+            new_offset_id = new_min_id - 1
+            
+            # Prevent infinite loop if offset doesn't change
+            if new_offset_id <= 0 or new_offset_id >= offset_id:
+                break
+            
+            offset_id = new_offset_id
             
             time.sleep(0.5)  # Rate limiting
         
