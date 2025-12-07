@@ -91,6 +91,8 @@ __icon__ = "Putin_1337/14"
 FORWARDING_RULES_KEY = "forwarding_rules_v1337"
 LAST_SEEN_IDS_KEY = "last_seen_inbox_ids_v1337"
 GLOBAL_KEYWORD_PATTERN = "global_keyword_pattern_v1337"
+MIN_HISTORICAL_DAYS = 1
+MAX_HISTORICAL_DAYS = 30
 DEFAULT_SETTINGS = {
     "deferral_timeout_ms": 5000,
     "min_msg_length": 1,
@@ -413,6 +415,20 @@ class AutoForwarderPlugin(BasePlugin):
         except Exception:
             log(f"[{self.id}] ERROR getting unread boundary: {traceback.format_exc()}")
         return self.last_seen_inbox_ids.get(chat_id, 0)
+
+    def _clamp_historical_days(self, days):
+        """Clamps the number of days to valid range."""
+        return max(MIN_HISTORICAL_DAYS, min(MAX_HISTORICAL_DAYS, days))
+
+    def _wait_for_response(self, response_holder, timeout_seconds=10, operation_name="request"):
+        """Waits for an async response with timeout. Returns True if response received, False if timeout."""
+        for _ in range(timeout_seconds * 10):  # Check every 0.1s
+            if response_holder["done"]:
+                return True
+            time.sleep(0.1)
+        
+        log(f"[{self.id}] Timeout waiting for {operation_name} response")
+        return False
 
     # --- Core Logic: Sequential Processing ---
     def _worker_loop(self):
@@ -903,14 +919,7 @@ class AutoForwarderPlugin(BasePlugin):
             
             send_request(req, RequestCallback(on_response))
             
-            # Wait for response with timeout (max 10 seconds)
-            for _ in range(100):  # 100 * 0.1s = 10s
-                if response_holder["done"]:
-                    break
-                time.sleep(0.1)
-            
-            if not response_holder["done"]:
-                log(f"[{self.id}] Timeout waiting for unread messages response")
+            if not self._wait_for_response(response_holder, timeout_seconds=10, operation_name="unread messages"):
                 return messages
             
             if response_holder["response"] and hasattr(response_holder["response"], "messages"):
@@ -1025,14 +1034,7 @@ class AutoForwarderPlugin(BasePlugin):
             
             send_request(req, RequestCallback(on_response))
             
-            # Wait for response with timeout (max 10 seconds)
-            for _ in range(100):  # 100 * 0.1s = 10s
-                if response_holder["done"]:
-                    break
-                time.sleep(0.1)
-            
-            if not response_holder["done"]:
-                log(f"[{self.id}] Timeout waiting for message batch response")
+            if not self._wait_for_response(response_holder, timeout_seconds=10, operation_name="message batch"):
                 return []
             
             if response_holder["response"] and hasattr(response_holder["response"], "messages"):
@@ -1058,14 +1060,11 @@ class AutoForwarderPlugin(BasePlugin):
                 messages.append(msg)
             
             # Update offset for next batch (non-overlapping pagination)
-            if not batch:
-                break
-            
             new_min_id = min(msg.id for msg in batch)
             new_offset_id = new_min_id - 1
             
-            # Prevent infinite loop if offset doesn't change
-            if new_offset_id <= 0 or new_offset_id >= offset_id:
+            # Prevent infinite loop if offset doesn't change or goes backwards
+            if new_offset_id <= 0 or (offset_id > 0 and new_offset_id >= offset_id):
                 break
             
             offset_id = new_offset_id
@@ -1113,10 +1112,13 @@ class AutoForwarderPlugin(BasePlugin):
     def _create_message_object_safely(self, message, chat_id):
         """Creates a MessageObject from a TLRPC message."""
         try:
-            # Try different constructors
+            # Try different MessageObject constructors with various parameter combinations
+            # The exact constructor signature varies across Telegram client versions
             constructors = [
+                # Standard constructor with user ID and message
                 lambda: MessageObject(get_user_config().getClientUserId(), message, True, True),
                 lambda: MessageObject(get_user_config().getClientUserId(), message, False, False),
+                # Extended constructor with additional parameters for scheduling, groups, etc.
                 lambda: MessageObject(get_user_config().getClientUserId(), message, None, None, None, True, 0, 0, False)
             ]
             
@@ -1280,8 +1282,7 @@ class AutoForwarderPlugin(BasePlugin):
         def on_proceed(d, w):
             try:
                 days_str = days_input.getText().toString()
-                days = int(days_str)
-                days = max(1, min(30, days))  # Clamp to 1-30
+                days = self._clamp_historical_days(int(days_str))
                 
                 BulletinHelper.show_info(f"Processing last {days} days...", get_last_fragment())
                 
@@ -1856,8 +1857,7 @@ class AutoForwarderPlugin(BasePlugin):
         def on_proceed(d, w):
             try:
                 days_str = days_input.getText().toString()
-                days = int(days_str)
-                days = max(1, min(30, days))  # Clamp to 1-30
+                days = self._clamp_historical_days(int(days_str))
                 
                 BulletinHelper.show_info(f"Processing last {days} days for all rules...", get_last_fragment())
                 
