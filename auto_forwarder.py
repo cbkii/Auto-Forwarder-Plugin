@@ -60,6 +60,7 @@ from java.lang import Runnable, String as JavaString, Integer
 from android.content import Intent
 from android.net import Uri
 from android.graphics import Typeface
+from android.widget import ImageView
 from java.net import URL, HttpURLConnection
 from java.io import File, FileOutputStream
 
@@ -83,7 +84,7 @@ __id__ = "auto_forwarder"
 __name__ = "Auto Fwd Fork"
 __description__ = "Sets up forwarding rules for any chat, including users, groups, and channels."
 __author__ = "@T3SL4,@cbkii"
-__version__ = "1.9.9.9"
+__version__ = "1.9.9.10"
 __min_version__ = "11.9.1"
 __icon__ = "Putin_1337/14"
 
@@ -206,8 +207,10 @@ class AutoForwarderPlugin(BasePlugin):
     USDT_ADDRESS = "TXLJNebRRAhwBRKtELMHJPNMtTZYHeoYBo"
     USER_TIMESTAMP_CACHE_SIZE = 500
     PROCESSED_FILES_CACHE_SIZE = 200
-    GITHUB_OWNER = "0x11DFE"
+    GITHUB_OWNER = "cbkii"
     GITHUB_REPO = "Auto-Forwarder-Plugin"
+    UPDATE_RAW_URL = "https://raw.githubusercontent.com/cbkii/Auto-Forwarder-Plugin/main/auto_forwarder.py"
+    UPDATE_DOWNLOAD_FILENAME = "auto_forwarder.plugin"
     UPDATE_INTERVAL_SECONDS = 6 * 60 * 60
 
     # --- Nested Proxy Classes ---
@@ -1211,7 +1214,14 @@ class AutoForwarderPlugin(BasePlugin):
             Input(key="min_msg_length", text="Minimum Message Length", default=str(DEFAULT_SETTINGS["min_msg_length"]), subtext="For text-only messages."),
             Input(key="max_msg_length", text="Maximum Message Length", default=str(DEFAULT_SETTINGS["max_msg_length"]), subtext="For text-only messages."),
             Input(key="antispam_delay_seconds", text="Anti-Spam Delay (Seconds)", default=str(DEFAULT_SETTINGS["antispam_delay_seconds"]), subtext="Minimum time between forwards from the same user. 0 to disable."),
-            Input(key=GLOBAL_KEYWORD_PATTERN, text="Global Keyword/Regex Filter (optional)", default="", subtext="Apply this filter to all rules that enable 'use global regex'."),
+            Divider(),
+            Header(text="Global keyword regex"),
+            Text(
+                text=self._get_global_regex_preview(),
+                icon="msg_edit",
+                accent=True,
+                on_click=lambda v: self._show_global_regex_dialog()
+            ),
             Divider(),
             Header(text="Global Actions"),
             Text(text="Fwd Unread (All Rules)", icon="msg_unread", accent=True, on_click=lambda v: self._forward_unread_all_rules()),
@@ -1222,23 +1232,15 @@ class AutoForwarderPlugin(BasePlugin):
         if not self.forwarding_rules:
             settings_ui.append(Text(text="No rules configured. Set one from any chat's menu.", icon="msg_info"))
         else:
-            sorted_rules = sorted(self.forwarding_rules.items(), key=lambda item: self._get_chat_name(item[0]).lower())
-            for source_id, rule_data in sorted_rules:
-                source_name = self._get_chat_name(source_id)
-                dest_name = self._get_chat_name(rule_data.get("destination", 0)) if rule_data.get("destination") else "Not Set"
-                style = "(Copy)"
-                settings_ui.append(Text(
-                    text=f"From: {source_name}\nTo: {dest_name} {style}",
-                    icon="msg_edit",
-                    on_click=lambda v, sid=source_id: self._show_rule_action_dialog(sid)
-                ))
+            settings_ui.append(Text(
+                text=f"View Active Rules ({len(self.forwarding_rules)})",
+                icon="msg_edit",
+                accent=True,
+                on_click=lambda v: self._show_active_rules_dialog()
+            ))
         settings_ui.append(Divider())
         settings_ui.extend([
-            Header(text="About & Support"),
-            Text(text="TON", icon="msg_ton", accent=True, on_click=lambda view: self._copy_to_clipboard(self.TON_ADDRESS, "TON")),
-            Text(text="USDT (TRC20)", icon="msg_copy", accent=True, on_click=lambda view: self._copy_to_clipboard(self.USDT_ADDRESS, "USDT")),
-            Divider(),
-            Text(text="Disclaimer & FAQ", icon="msg_help", accent=True, on_click=lambda v: self._show_faq_dialog()),
+            Text(text="About this plugin", icon="msg_info", accent=True, on_click=lambda v: self._show_about_dialog()),
             Divider(),
             Text(
                 text="Check for Updates",
@@ -2132,6 +2134,114 @@ class AutoForwarderPlugin(BasePlugin):
         return original_author_name, original_author_entity
     
     # --- Misc UI and Utilities ---
+    def _get_global_regex_preview(self):
+        """Returns a truncated preview of the global keyword/regex pattern."""
+        value = self.get_setting(GLOBAL_KEYWORD_PATTERN, "").strip()
+        if not value:
+            return "Tap to set a global keyword/regex pattern."
+        lines = value.splitlines()
+        if len(lines) <= 3:
+            return value
+        preview_lines = lines[:3]
+        preview_lines[-1] = f"{preview_lines[-1]}…"
+        return "\n".join(preview_lines)
+
+    def _show_global_regex_dialog(self):
+        """Shows a dialog for editing the global keyword/regex pattern."""
+        activity = get_last_fragment().getParentActivity()
+        if not activity: return
+        builder = AlertDialogBuilder(activity)
+        builder.set_title("Global keyword regex")
+        margin_dp = 20
+        margin_px = int(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, margin_dp, activity.getResources().getDisplayMetrics()))
+
+        input_field = EditText(activity)
+        input_field.setHint("Enter keywords or regex (optional)")
+        input_field.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
+        input_field.setHintTextColor(Theme.getColor(Theme.key_dialogTextHint))
+        input_field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE)
+        input_field.setSingleLine(False)
+        input_field.setMinLines(3)
+        input_field.setMaxLines(3)
+        input_field.setHorizontallyScrolling(False)
+        input_field.setText(self.get_setting(GLOBAL_KEYWORD_PATTERN, ""))
+
+        container = FrameLayout(activity)
+        params = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        params.setMargins(margin_px, margin_px // 2, margin_px, margin_px // 2)
+        input_field.setLayoutParams(params)
+        container.addView(input_field)
+
+        def on_save(button, which):
+            self.set_setting(GLOBAL_KEYWORD_PATTERN, input_field.getText().toString())
+            self._refresh_settings_ui()
+
+        builder.set_view(container)
+        builder.set_positive_button("Save", on_save)
+        builder.set_negative_button("Cancel", None)
+        run_on_ui_thread(builder.show)
+
+    def _show_active_rules_dialog(self):
+        """Shows a scrollable list of active forwarding rules."""
+        activity = get_last_fragment().getParentActivity()
+        if not activity: return
+        builder = AlertDialogBuilder(activity)
+        builder.set_title("Active Forwarding Rules")
+        margin_dp = 20
+        margin_px = int(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, margin_dp, activity.getResources().getDisplayMetrics()))
+        icon_size_px = int(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 18, activity.getResources().getDisplayMetrics()))
+        item_padding_px = int(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 8, activity.getResources().getDisplayMetrics()))
+
+        scroller = ScrollView(activity)
+        layout = LinearLayout(activity)
+        layout.setOrientation(LinearLayout.VERTICAL)
+        layout.setPadding(margin_px, margin_px // 2, margin_px, margin_px // 2)
+
+        if not self.forwarding_rules:
+            empty_view = TextView(activity)
+            empty_view.setText("No rules configured. Set one from any chat's menu.")
+            empty_view.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
+            empty_view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14)
+            layout.addView(empty_view)
+        else:
+            sorted_rules = sorted(self.forwarding_rules.items(), key=lambda item: self._get_chat_name(item[0]).lower())
+            for index, (source_id, rule_data) in enumerate(sorted_rules):
+                source_name = self._get_chat_name(source_id)
+                dest_name = self._get_chat_name(rule_data.get("destination", 0)) if rule_data.get("destination") else "Not Set"
+                row = LinearLayout(activity)
+                row.setOrientation(LinearLayout.HORIZONTAL)
+                row.setPadding(0, item_padding_px, 0, item_padding_px)
+                row.setClickable(True)
+
+                icon_view = ImageView(activity)
+                icon_view.setImageResource(R.drawable.msg_edit)
+                icon_params = LinearLayout.LayoutParams(icon_size_px, icon_size_px)
+                icon_params.setMargins(0, 0, item_padding_px, 0)
+                icon_view.setLayoutParams(icon_params)
+
+                text_view = TextView(activity)
+                text_view.setText(f"From: {source_name}\nTo: {dest_name} (Copy)")
+                text_view.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
+                text_view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14)
+                text_view.setLineSpacing(0, 1.05)
+
+                row.addView(icon_view)
+                row.addView(text_view)
+                row.setOnClickListener(self.OnClickListenerProxy(lambda v, sid=source_id: self._show_rule_action_dialog(sid)))
+                layout.addView(row)
+
+                if index < len(sorted_rules) - 1:
+                    divider = View(activity)
+                    divider.setBackgroundColor(Theme.getColor(Theme.key_divider))
+                    divider_params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1)
+                    divider.setLayoutParams(divider_params)
+                    layout.addView(divider)
+
+        scroller.addView(layout)
+        builder.set_view(scroller)
+        builder.set_positive_button("Close", None)
+        run_on_ui_thread(builder.show)
+
     def _refresh_settings_ui(self):
         """Forces the plugin settings screen to rebuild its views."""
         try:
@@ -2173,13 +2283,13 @@ class AutoForwarderPlugin(BasePlugin):
         html_text = '<br>'.join(html_lines)
         return re.sub(r'(<br>\s*){2,}', '<br><br>', html_text)
 
-    def _show_faq_dialog(self):
-        """Displays the formatted FAQ and Disclaimer dialog."""
+    def _show_about_dialog(self):
+        """Displays the about, support, disclaimer, and FAQ dialog."""
         activity = get_last_fragment().getParentActivity()
         if not activity: return
         try:
             builder = AlertDialogBuilder(activity)
-            builder.set_title("Disclaimer & FAQ")
+            builder.set_title("About this plugin")
             margin_dp = 20
             margin_px = int(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, margin_dp, activity.getResources().getDisplayMetrics()))
 
@@ -2187,6 +2297,46 @@ class AutoForwarderPlugin(BasePlugin):
             layout = LinearLayout(activity)
             layout.setOrientation(LinearLayout.VERTICAL)
             layout.setPadding(margin_px, margin_px // 2, margin_px, margin_px // 2)
+            about_header = TextView(activity)
+            about_header.setText("About & Support")
+            about_header.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
+            about_header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16)
+            about_header.setTypeface(Typeface.DEFAULT_BOLD)
+            layout.addView(about_header)
+
+            description_view = TextView(activity)
+            description_view.setText(f"{__name__} — {__description__}\nBy {__author__}")
+            description_view.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
+            description_view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14)
+            description_view.setLineSpacing(0, 1.1)
+            description_view.setPadding(0, margin_px // 4, 0, margin_px // 4)
+            layout.addView(description_view)
+
+            link_color = Theme.getColor(Theme.key_dialogTextLink)
+            ton_view = TextView(activity)
+            ton_view.setText(f"TON: {self.TON_ADDRESS}")
+            ton_view.setTextColor(link_color)
+            ton_view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14)
+            ton_view.setPadding(0, 0, 0, margin_px // 6)
+            ton_view.setOnClickListener(self.OnClickListenerProxy(lambda v: self._copy_to_clipboard(self.TON_ADDRESS, "TON")))
+            layout.addView(ton_view)
+
+            usdt_view = TextView(activity)
+            usdt_view.setText(f"USDT (TRC20): {self.USDT_ADDRESS}")
+            usdt_view.setTextColor(link_color)
+            usdt_view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14)
+            usdt_view.setPadding(0, 0, 0, margin_px // 2)
+            usdt_view.setOnClickListener(self.OnClickListenerProxy(lambda v: self._copy_to_clipboard(self.USDT_ADDRESS, "USDT")))
+            layout.addView(usdt_view)
+
+            faq_header = TextView(activity)
+            faq_header.setText("Disclaimer & FAQ")
+            faq_header.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
+            faq_header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16)
+            faq_header.setTypeface(Typeface.DEFAULT_BOLD)
+            faq_header.setPadding(0, 0, 0, margin_px // 4)
+            layout.addView(faq_header)
+
             faq_text_view = TextView(activity)
             
             def process_inline_markdown(text):
@@ -2237,6 +2387,11 @@ class AutoForwarderPlugin(BasePlugin):
             log(f"[{self.id}] ERROR showing FAQ dialog: {traceback.format_exc()}")
 
     # --- Update Mechanism ---
+    def _extract_version_from_source(self, source_text):
+        """Extracts the __version__ string from a source file."""
+        match = re.search(r'__version__\s*=\s*[\'"]([^\'"]+)[\'"]', source_text)
+        return match.group(1) if match else None
+
     def _updater_loop(self):
         """A background thread that periodically checks for new plugin updates."""
         log(f"[{self.id}] Updater loop started.")
@@ -2252,10 +2407,9 @@ class AutoForwarderPlugin(BasePlugin):
         threading.Thread(target=self._perform_update_check, args=[is_manual]).start()
 
     def _perform_update_check(self, is_manual):
-        """Connects to the GitHub API to check for the latest release."""
+        """Checks the repository source file for the latest version."""
         try:
-            api_url = URL(f"https://api.github.com/repos/{self.GITHUB_OWNER}/{self.GITHUB_REPO}/releases/latest")
-            connection = api_url.openConnection()
+            connection = URL(self.UPDATE_RAW_URL).openConnection()
             connection.setRequestMethod("GET")
             connection.connect()
             if connection.getResponseCode() == HttpURLConnection.HTTP_OK:
@@ -2263,25 +2417,19 @@ class AutoForwarderPlugin(BasePlugin):
                 scanner = Scanner(stream, "UTF-8").useDelimiter("\\A")
                 response_str = scanner.next() if scanner.hasNext() else ""
                 scanner.close()
-                release_data = json.loads(response_str)
-                latest_version_tag = release_data.get("tag_name", "0.0.0").lstrip('v')
+                latest_version_tag = self._extract_version_from_source(response_str)
+                if not latest_version_tag:
+                    if is_manual:
+                        BulletinHelper.show_error("Unable to read version from repository source.", get_last_fragment())
+                    return
+
                 current_version = __version__.split('-')[0]
-                
                 latest_v_tuple = tuple(map(int, latest_version_tag.split('.')))
                 current_v_tuple = tuple(map(int, current_version.split('.')))
 
                 if latest_v_tuple > current_v_tuple:
-                    changelog = release_data.get("body", "No changelog provided.")
-                    assets = release_data.get("assets", [])
-                    download_url = None
-                    for asset in assets:
-                        if asset.get("name", "").endswith(".py"):
-                            download_url = asset.get("browser_download_url")
-                            break
-                    if download_url:
-                        run_on_ui_thread(lambda: self._show_update_dialog(latest_version_tag, changelog, download_url))
-                    elif is_manual:
-                        BulletinHelper.show_error("Update found, but no download file available.", get_last_fragment())
+                    changelog = "Update available from the repository."
+                    run_on_ui_thread(lambda: self._show_update_dialog(latest_version_tag, changelog, self.UPDATE_RAW_URL))
                 elif is_manual:
                     BulletinHelper.show_info("You are on the latest version!", get_last_fragment())
             elif is_manual:
@@ -2330,7 +2478,9 @@ class AutoForwarderPlugin(BasePlugin):
                 plugins_controller = PluginsController.getInstance()
                 cache_dir = File(plugins_controller.pluginsDir, ".cache")
                 cache_dir.mkdirs()
-                temp_file = File(cache_dir, f"temp_{self.id}_v{version}.py")
+                temp_file = File(cache_dir, self.UPDATE_DOWNLOAD_FILENAME)
+                if temp_file.exists():
+                    temp_file.delete()
                 input_stream = connection.getInputStream()
                 output_stream = FileOutputStream(temp_file)
                 buffer = bytearray(4096)
