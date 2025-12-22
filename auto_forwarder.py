@@ -2183,6 +2183,29 @@ class AutoForwarderPlugin(BasePlugin):
 
     def _show_active_rules_dialog(self):
         """Shows a scrollable list of active forwarding rules."""
+        def prepare_rules():
+            if not self.forwarding_rules:
+                rules_data = []
+            else:
+                sorted_rules = sorted(self.forwarding_rules.items(), key=lambda item: self._get_chat_name(item[0]).lower())
+                rules_data = []
+                for source_id, rule_data in sorted_rules:
+                    source_name = self._get_chat_name(source_id)
+                    dest_name = self._get_chat_name(rule_data.get("destination", 0)) if rule_data.get("destination") else "Not Set"
+                    drop_author = rule_data.get("drop_author", True)
+                    rules_data.append({
+                        "source_id": source_id,
+                        "source_name": source_name,
+                        "dest_name": dest_name,
+                        "drop_author": drop_author
+                    })
+
+            run_on_ui_thread(lambda: self._build_active_rules_dialog(rules_data))
+
+        threading.Thread(target=prepare_rules, daemon=True).start()
+
+    def _build_active_rules_dialog(self, rules_data):
+        """Builds the active rules dialog on the UI thread."""
         activity = get_last_fragment().getParentActivity()
         if not activity: return
         builder = AlertDialogBuilder(activity)
@@ -2197,17 +2220,14 @@ class AutoForwarderPlugin(BasePlugin):
         layout.setOrientation(LinearLayout.VERTICAL)
         layout.setPadding(margin_px, margin_px // 2, margin_px, margin_px // 2)
 
-        if not self.forwarding_rules:
+        if not rules_data:
             empty_view = TextView(activity)
             empty_view.setText("No rules configured. Set one from any chat's menu.")
             empty_view.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
             empty_view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14)
             layout.addView(empty_view)
         else:
-            sorted_rules = sorted(self.forwarding_rules.items(), key=lambda item: self._get_chat_name(item[0]).lower())
-            for index, (source_id, rule_data) in enumerate(sorted_rules):
-                source_name = self._get_chat_name(source_id)
-                dest_name = self._get_chat_name(rule_data.get("destination", 0)) if rule_data.get("destination") else "Not Set"
+            for index, rule in enumerate(rules_data):
                 row = LinearLayout(activity)
                 row.setOrientation(LinearLayout.HORIZONTAL)
                 row.setPadding(0, item_padding_px, 0, item_padding_px)
@@ -2219,18 +2239,20 @@ class AutoForwarderPlugin(BasePlugin):
                 icon_params.setMargins(0, 0, item_padding_px, 0)
                 icon_view.setLayoutParams(icon_params)
 
+                suffix = " (Copy)" if rule["drop_author"] else " (Forwarded)"
+                display_text = f"From: {rule['source_name']}\nTo: {rule['dest_name']}{suffix}"
                 text_view = TextView(activity)
-                text_view.setText(f"From: {source_name}\nTo: {dest_name} (Copy)")
+                text_view.setText(display_text)
                 text_view.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
                 text_view.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14)
                 text_view.setLineSpacing(0, 1.05)
 
                 row.addView(icon_view)
                 row.addView(text_view)
-                row.setOnClickListener(self.OnClickListenerProxy(lambda v, sid=source_id: self._show_rule_action_dialog(sid)))
+                row.setOnClickListener(self.OnClickListenerProxy(lambda v, sid=rule["source_id"]: self._show_rule_action_dialog(sid)))
                 layout.addView(row)
 
-                if index < len(sorted_rules) - 1:
+                if index < len(rules_data) - 1:
                     divider = View(activity)
                     divider.setBackgroundColor(Theme.getColor(Theme.key_divider))
                     divider_params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 1)
@@ -2463,13 +2485,17 @@ class AutoForwarderPlugin(BasePlugin):
         scroller.addView(changelog_view)
         builder.set_view(scroller)
 
-        on_update_click = lambda b, w: threading.Thread(target=self._download_and_install, args=[download_url, version]).start()
+        on_update_click = lambda b, w: self._download_and_install(download_url, version)
         builder.set_positive_button("Update", on_update_click)
         builder.set_negative_button("Cancel", None)
         run_on_ui_thread(builder.show)
 
     def _download_and_install(self, url, version):
         """Downloads the new plugin file and initiates the installation process."""
+        threading.Thread(target=self._perform_download_and_install, args=[url, version], daemon=True).start()
+
+    def _perform_download_and_install(self, url, version):
+        """Performs the download and installation work off the UI thread."""
         try:
             BulletinHelper.show_info(f"Downloading update v{version}...", get_last_fragment())
             connection = URL(url).openConnection()
