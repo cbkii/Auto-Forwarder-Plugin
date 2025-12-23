@@ -526,7 +526,7 @@ class AutoForwarderPlugin(BasePlugin):
 
             self.processed_keys.append((event_key, current_time))
 
-        if not self._passes_non_keyword_filters(message_object, rule):
+        if not self._passes_non_keyword_filters(message_object, rule, include_content_length=False, log_failures=True):
             return
 
         # Apply anti-spam rate limit
@@ -565,6 +565,18 @@ class AutoForwarderPlugin(BasePlugin):
 
     def _process_and_send(self, message_object, rule):
         """Performs final content checks and sends the message."""
+        message = message_object.messageOwner
+
+        # Filter by content type (text, photo, etc.)
+        if not self._is_message_allowed_by_filters(message_object, rule):
+            return
+
+        # Filter by message length
+        is_text_based = not message.media or isinstance(message.media, (TLRPC.TL_messageMediaEmpty, TLRPC.TL_messageMediaWebPage))
+        if is_text_based:
+            if not (self.min_msg_length <= len(message.message or "") <= self.max_msg_length):
+                return
+
         # Filter by keywords/regex (local and global)
         keyword_pattern = rule.get("keyword_pattern", "").strip()
         use_global_regex = rule.get("use_global_regex", False)
@@ -585,7 +597,7 @@ class AutoForwarderPlugin(BasePlugin):
             source_chat_id = self._get_id_from_peer(message_object.messageOwner.peer_id)
             rule = self.forwarding_rules.get(source_chat_id)
             if rule:
-                if self._passes_non_keyword_filters(message_object, rule):
+                if self._passes_non_keyword_filters(message_object, rule, include_content_length=False):
                     self._process_and_send(message_object, rule)
             del self.deferred_messages[event_key]
 
@@ -914,8 +926,8 @@ class AutoForwarderPlugin(BasePlugin):
                     text_to_check = f"{text_to_check} {filename}".strip()
         return text_to_check
 
-    def _passes_non_keyword_filters(self, message_obj, rule):
-        """Checks filters other than keyword/global regex."""
+    def _passes_non_keyword_filters(self, message_obj, rule, include_content_length=True, log_failures=False):
+        """Checks author type/filters and optionally content-type + length (excluding keyword filters)."""
         message = message_obj.messageOwner
 
         author_type = self._get_author_type(message)
@@ -938,15 +950,18 @@ class AutoForwarderPlugin(BasePlugin):
                 if author_entity.username.lower() in allowed_authors:
                     match_found = True
             if not match_found:
+                if log_failures:
+                    log(f"[{self.id}] Dropping message from '{self._get_entity_name(author_entity)}' due to author filter.")
                 return False
 
-        if not self._is_message_allowed_by_filters(message_obj, rule):
-            return False
-
-        is_text_based = not message.media or isinstance(message.media, (TLRPC.TL_messageMediaEmpty, TLRPC.TL_messageMediaWebPage))
-        if is_text_based:
-            if not (self.min_msg_length <= len(message.message or "") <= self.max_msg_length):
+        if include_content_length:
+            if not self._is_message_allowed_by_filters(message_obj, rule):
                 return False
+
+            is_text_based = not message.media or isinstance(message.media, (TLRPC.TL_messageMediaEmpty, TLRPC.TL_messageMediaWebPage))
+            if is_text_based:
+                if not (self.min_msg_length <= len(message.message or "") <= self.max_msg_length):
+                    return False
 
         return True
 
