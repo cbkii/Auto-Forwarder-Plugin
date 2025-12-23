@@ -1180,25 +1180,23 @@ class AutoForwarderPlugin(BasePlugin):
         return None
 
     def _passes_combined_keyword_filter(self, text_to_check, local_pattern, use_global, global_pattern):
-        """Checks if text passes both local and global regex filters."""
+        """Checks if text passes local OR global regex filters."""
         if not local_pattern and not (use_global and global_pattern):
             return True
         
         if not text_to_check:
             return False
         
-        # Check local pattern
-        local_pass = True
         if local_pattern:
-            local_pass = self._passes_keyword_filter(text_to_check, local_pattern)
+            if self._passes_keyword_filter(text_to_check, local_pattern):
+                return True
         
-        # Check global pattern
-        global_pass = True
         if use_global and global_pattern:
-            global_pass = self._passes_keyword_filter(text_to_check, global_pattern)
+            if self._passes_keyword_filter(text_to_check, global_pattern):
+                return True
         
-        # Both must pass (logical AND)
-        return local_pass and global_pass
+        # No active filter matched
+        return False
 
     # --- UI & Dialog Methods ---
     def create_settings(self) -> list:
@@ -1413,7 +1411,7 @@ class AutoForwarderPlugin(BasePlugin):
             checkbox_params.setMargins(margin_px, 0, margin_px, 0)
             
             use_global_regex_checkbox = CheckBox(activity)
-            use_global_regex_checkbox.setText("Also apply global regex filter")
+            use_global_regex_checkbox.setText("Match local OR global regex")
             use_global_regex_checkbox.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
             use_global_regex_checkbox.setButtonTintList(checkbox_tint_list)
             use_global_regex_checkbox.setLayoutParams(checkbox_params)
