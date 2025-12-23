@@ -84,9 +84,9 @@ __id__ = "auto_forwarder"
 __name__ = "Auto Fwd Fork"
 __description__ = "Sets up forwarding rules for any chat, including users, groups, and channels."
 __author__ = "@T3SL4,@cbkii"
-__version__ = "1.9.9.10"
+__version__ = "1.9.9.11"
 __min_version__ = "11.9.1"
-__icon__ = "Putin_1337/14"
+__icon__ = "msg_arrow_forward"
 
 # --- Configuration Constants ---
 FORWARDING_RULES_KEY = "forwarding_rules_v1337"
@@ -1224,7 +1224,7 @@ class AutoForwarderPlugin(BasePlugin):
             ),
             Divider(),
             Header(text="Global Actions"),
-            Text(text="Fwd Unread (All Rules)", icon="msg_unread", accent=True, on_click=lambda v: self._forward_unread_all_rules()),
+            Text(text="Fwd Unread (All Rules)", icon="msg_discuss", accent=True, on_click=lambda v: self._forward_unread_all_rules()),
             Text(text="Fwd Last X Days (All Rules)", icon="msg_calendar", accent=True, on_click=lambda v: self._forward_historical_all_rules()),
             Divider(),
             Header(text="Active Forwarding Rules")
@@ -1253,9 +1253,9 @@ class AutoForwarderPlugin(BasePlugin):
 
     def _add_chat_menu_item(self):
         """Adds the 'Auto Forward...' option to the chat three-dots menu."""
-        self.add_menu_item(MenuItemData(menu_type=MenuItemType.CHAT_ACTION_MENU, text="Auto Fwd...", icon="msg_forward", on_click=self._on_menu_item_click))
-        self.add_menu_item(MenuItemData(menu_type=MenuItemType.CHAT_ACTION_MENU, text="Process Unread Messages", icon="msg_unread", on_click=self._on_process_unread_click))
-        self.add_menu_item(MenuItemData(menu_type=MenuItemType.CHAT_ACTION_MENU, text="Process Messages from Date", icon="msg_calendar", on_click=self._on_process_historical_click))
+        self.add_menu_item(MenuItemData(menu_type=MenuItemType.CHAT_ACTION_MENU, text="Auto Fwd...", icon="msg_arrow_forward", on_click=self._on_menu_item_click))
+        self.add_menu_item(MenuItemData(menu_type=MenuItemType.CHAT_ACTION_MENU, text="Fwd Unread Messages", icon="msg_discuss", on_click=self._on_process_unread_click))
+        self.add_menu_item(MenuItemData(menu_type=MenuItemType.CHAT_ACTION_MENU, text="Fwd Messages from Date", icon="msg_calendar", on_click=self._on_process_historical_click))
 
     def _on_menu_item_click(self, context):
         """Handles clicks on the 'Auto Forward...' menu item."""
@@ -1269,7 +1269,7 @@ class AutoForwarderPlugin(BasePlugin):
             run_on_ui_thread(lambda: self._show_destination_input_dialog(current_chat_id, source_name))
 
     def _on_process_unread_click(self, context):
-        """Handles clicks on the 'Process Unread Messages' menu item."""
+        """Handles clicks on the 'Fwd Unread Messages' menu item."""
         current_chat_id = context.get("dialog_id")
         if not current_chat_id:
             return
@@ -2162,7 +2162,7 @@ class AutoForwarderPlugin(BasePlugin):
         input_field.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE)
         input_field.setSingleLine(False)
         input_field.setMinLines(3)
-        input_field.setMaxLines(3)
+        input_field.setMaxLines(10)
         input_field.setHorizontallyScrolling(False)
         input_field.setText(self.get_setting(GLOBAL_KEYWORD_PATTERN, ""))
 
