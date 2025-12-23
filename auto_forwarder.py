@@ -33,6 +33,7 @@ import collections
 import time
 import re
 import os
+import math
 import threading
 import queue
 
@@ -505,6 +506,8 @@ class AutoForwarderPlugin(BasePlugin):
         message = message_object.messageOwner
         source_chat_id = self._get_id_from_peer(message.peer_id)
         rule = self.forwarding_rules.get(source_chat_id)
+        if not rule or not rule.get("enabled", False):
+            return
 
         with self.lock:
             event_key = None
@@ -523,27 +526,8 @@ class AutoForwarderPlugin(BasePlugin):
 
             self.processed_keys.append((event_key, current_time))
 
-        # Filter by author type
-        author_type = self._get_author_type(message)
-        if author_type == "outgoing" and not rule.get("forward_outgoing", True): return
-        if author_type == "user" and not rule.get("forward_users", True): return
-        if author_type == "bot" and not rule.get("forward_bots", True): return
-
-        # Filter by specific author
-        author_filter = rule.get("author_filter", "").strip()
-        if author_filter and (author_type == "user" or author_type == "bot"):
-            author_id = self._get_id_from_peer(message.from_id)
-            author_entity = self._get_chat_entity(author_id)
-            allowed_authors = [t.strip().lower().lstrip('@') for t in author_filter.split(',') if t.strip()]
-            match_found = False
-            if str(author_id) in allowed_authors:
-                match_found = True
-            if not match_found and author_entity and hasattr(author_entity, 'username') and author_entity.username:
-                if author_entity.username.lower() in allowed_authors:
-                    match_found = True
-            if not match_found:
-                log(f"[{self.id}] Dropping message from '{self._get_entity_name(author_entity)}' due to author filter.")
-                return
+        if not self._passes_non_keyword_filters(message_object, rule, include_content_length=False, log_failures=True):
+            return
 
         # Apply anti-spam rate limit
         if self.antispam_delay_seconds > 0:
@@ -582,10 +566,16 @@ class AutoForwarderPlugin(BasePlugin):
     def _process_and_send(self, message_object, rule):
         """Performs final content checks and sends the message."""
         message = message_object.messageOwner
-        
+
         # Filter by content type (text, photo, etc.)
         if not self._is_message_allowed_by_filters(message_object, rule):
             return
+
+        # Filter by message length
+        is_text_based = not message.media or isinstance(message.media, (TLRPC.TL_messageMediaEmpty, TLRPC.TL_messageMediaWebPage))
+        if is_text_based:
+            if not (self.min_msg_length <= len(message.message or "") <= self.max_msg_length):
+                return
 
         # Filter by keywords/regex (local and global)
         keyword_pattern = rule.get("keyword_pattern", "").strip()
@@ -593,19 +583,8 @@ class AutoForwarderPlugin(BasePlugin):
         global_pattern = self.get_setting(GLOBAL_KEYWORD_PATTERN, "").strip()
         
         if keyword_pattern or (use_global_regex and global_pattern):
-            text_to_check = message.message or ""
-            if message_object.isDocument():
-                doc = getattr(message.media, 'document', None)
-                filename = self._get_document_filename(doc)
-                if filename:
-                    text_to_check = f"{text_to_check} {filename}".strip()
+            text_to_check = self._get_keyword_text_for_message(message_object)
             if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
-                return
-        
-        # Filter by message length
-        is_text_based = not message.media or isinstance(message.media, (TLRPC.TL_messageMediaEmpty, TLRPC.TL_messageMediaWebPage))
-        if is_text_based:
-            if not (self.min_msg_length <= len(message.message or "") <= self.max_msg_length):
                 return
 
         self._send_forwarded_message(message_object, rule)
@@ -618,7 +597,8 @@ class AutoForwarderPlugin(BasePlugin):
             source_chat_id = self._get_id_from_peer(message_object.messageOwner.peer_id)
             rule = self.forwarding_rules.get(source_chat_id)
             if rule:
-                self._process_and_send(message_object, rule)
+                if self._passes_non_keyword_filters(message_object, rule, include_content_length=False):
+                    self._process_and_send(message_object, rule)
             del self.deferred_messages[event_key]
 
     def _process_album(self, grouped_id):
@@ -934,107 +914,152 @@ class AutoForwarderPlugin(BasePlugin):
         
         return messages
 
+    def _get_keyword_text_for_message(self, message_obj):
+        """Builds the text used for keyword matching, including document filenames."""
+        message = message_obj.messageOwner
+        text_to_check = message.message or ""
+        if message_obj.isDocument():
+            doc = getattr(message.media, 'document', None)
+            if doc:
+                filename = self._get_document_filename(doc)
+                if filename:
+                    text_to_check = f"{text_to_check} {filename}".strip()
+        return text_to_check
+
+    def _passes_non_keyword_filters(self, message_obj, rule, include_content_length=True, log_failures=False):
+        """Checks author type/filters and optionally content-type + length (excluding keyword filters)."""
+        message = message_obj.messageOwner
+
+        author_type = self._get_author_type(message)
+        if author_type == "outgoing" and not rule.get("forward_outgoing", True):
+            return False
+        if author_type == "user" and not rule.get("forward_users", True):
+            return False
+        if author_type == "bot" and not rule.get("forward_bots", True):
+            return False
+
+        author_filter = rule.get("author_filter", "").strip()
+        if author_filter and (author_type == "user" or author_type == "bot"):
+            author_id = self._get_id_from_peer(message.from_id)
+            author_entity = self._get_chat_entity(author_id)
+            allowed_authors = [t.strip().lower().lstrip('@') for t in author_filter.split(',') if t.strip()]
+            match_found = False
+            if str(author_id) in allowed_authors:
+                match_found = True
+            if not match_found and author_entity and hasattr(author_entity, 'username') and author_entity.username:
+                if author_entity.username.lower() in allowed_authors:
+                    match_found = True
+            if not match_found:
+                if log_failures:
+                    log(f"[{self.id}] Dropping message from '{self._get_entity_name(author_entity)}' due to author filter.")
+                return False
+
+        if include_content_length:
+            if not self._is_message_allowed_by_filters(message_obj, rule):
+                return False
+
+            is_text_based = not message.media or isinstance(message.media, (TLRPC.TL_messageMediaEmpty, TLRPC.TL_messageMediaWebPage))
+            if is_text_based:
+                if not (self.min_msg_length <= len(message.message or "") <= self.max_msg_length):
+                    return False
+
+        return True
+
     def _would_message_pass_filters(self, message_obj, chat_id):
         """Checks if a message would pass all filters without sending it."""
         try:
             rule = self.forwarding_rules.get(chat_id)
             if not rule:
                 return False
-            
-            message = message_obj.messageOwner
-            
-            # Check author type
-            author_type = self._get_author_type(message)
-            if author_type == "outgoing" and not rule.get("forward_outgoing", True):
+
+            if not self._passes_non_keyword_filters(message_obj, rule):
                 return False
-            if author_type == "user" and not rule.get("forward_users", True):
-                return False
-            if author_type == "bot" and not rule.get("forward_bots", True):
-                return False
-            
-            # Check author filter
-            author_filter = rule.get("author_filter", "").strip()
-            if author_filter and (author_type == "user" or author_type == "bot"):
-                author_id = self._get_id_from_peer(message.from_id)
-                author_entity = self._get_chat_entity(author_id)
-                allowed_authors = [t.strip().lower().lstrip('@') for t in author_filter.split(',') if t.strip()]
-                match_found = False
-                if str(author_id) in allowed_authors:
-                    match_found = True
-                if not match_found and author_entity and hasattr(author_entity, 'username') and author_entity.username:
-                    if author_entity.username.lower() in allowed_authors:
-                        match_found = True
-                if not match_found:
-                    return False
-            
-            # Check content type filters using MessageObject methods
-            if not self._is_message_allowed_by_filters(message_obj, rule):
-                return False
-            
-            # Check keyword filter
+
             keyword_pattern = rule.get("keyword_pattern", "").strip()
             use_global_regex = rule.get("use_global_regex", False)
             global_pattern = self.get_setting(GLOBAL_KEYWORD_PATTERN, "").strip()
-            
+
             if keyword_pattern or (use_global_regex and global_pattern):
-                text_to_check = message.message or ""
-                # Include document filename in keyword check (consistent with live processing)
-                if message_obj.isDocument():
-                    doc = getattr(message.media, 'document', None)
-                    if doc:
-                        filename = self._get_document_filename(doc)
-                        if filename:
-                            text_to_check = f"{text_to_check} {filename}".strip()
+                text_to_check = self._get_keyword_text_for_message(message_obj)
                 if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
                     return False
-            
-            # Check length
-            is_text_based = not message.media or isinstance(message.media, (TLRPC.TL_messageMediaEmpty, TLRPC.TL_messageMediaWebPage))
-            if is_text_based:
-                if not (self.min_msg_length <= len(message.message or "") <= self.max_msg_length):
-                    return False
-            
+
             return True
         except Exception:
             log(f"[{self.id}] ERROR in _would_message_pass_filters: {traceback.format_exc()}")
             return False
 
-    def _process_unread_messages(self, chat_id):
+    def _format_processing_duration(self, seconds):
+        """Formats a duration in seconds for display."""
+        if seconds <= 0:
+            return "0 sec"
+        minutes, secs = divmod(seconds, 60)
+        hours, minutes = divmod(minutes, 60)
+        if hours:
+            return f"{hours} hr {minutes} min"
+        if minutes:
+            return f"{minutes} min {secs} sec"
+        return f"{secs} sec"
+
+    def _build_processing_summary(self, messages, rule):
+        """Builds summary stats and message objects for processing."""
+        keyword_pattern = rule.get("keyword_pattern", "").strip()
+        use_global_regex = rule.get("use_global_regex", False)
+        global_pattern = self.get_setting(GLOBAL_KEYWORD_PATTERN, "").strip()
+        local_active = bool(keyword_pattern)
+        global_active = bool(use_global_regex and global_pattern)
+
+        local_matches = 0
+        global_matches = 0
+        messages_to_process = []
+
+        for msg in messages:
+            msg_obj = self._create_message_object_safely(msg)
+            if not msg_obj:
+                continue
+
+            if not self._passes_non_keyword_filters(msg_obj, rule):
+                continue
+
+            if local_active or global_active:
+                text_to_check = self._get_keyword_text_for_message(msg_obj)
+                local_match = local_active and self._passes_keyword_filter(text_to_check, keyword_pattern)
+                global_match = global_active and self._passes_keyword_filter(text_to_check, global_pattern)
+                if local_match:
+                    local_matches += 1
+                if global_match:
+                    global_matches += 1
+                if not (local_match or global_match):
+                    continue
+
+            messages_to_process.append(msg_obj)
+
+        return {
+            "local_active": local_active,
+            "global_active": global_active,
+            "local_matches": local_matches,
+            "global_matches": global_matches,
+            "messages_to_process": messages_to_process,
+        }
+
+    def _process_unread_messages(self, chat_id, show_summary=False):
         """Processes unread messages for a single chat."""
         try:
             rule = self.forwarding_rules.get(chat_id)
             if not rule:
                 log(f"[{self.id}] No rule found for chat {chat_id}")
                 return {"success": False, "processed": 0, "error": "No rule configured"}
-            
+
             boundary = self._get_unread_boundary(chat_id)
             messages = self._get_unread_messages_after_boundary(chat_id, boundary, limit=500)
-            
+
             if not messages:
                 log(f"[{self.id}] No unread messages found for chat {chat_id}")
                 return {"success": True, "processed": 0, "error": None}
-            
-            # Sort oldest first
-            messages.sort(key=lambda m: m.id)
-            
-            processed = 0
-            for msg in messages:
-                try:
-                    # Create MessageObject for proper processing
-                    msg_obj = self._create_message_object_safely(msg)
-                    if not msg_obj:
-                        continue
-                    
-                    # Check if message would pass all filters
-                    if self._would_message_pass_filters(msg_obj, chat_id):
-                        self._send_forwarded_message(msg_obj, rule)
-                        processed += 1
-                        time.sleep(0.5)  # Small delay to avoid spam
-                except Exception:
-                    log(f"[{self.id}] ERROR processing message {msg.id}: {traceback.format_exc()}")
-            
-            log(f"[{self.id}] Processed {processed} unread messages for chat {chat_id}")
-            return {"success": True, "processed": processed, "error": None}
+
+            result = self._process_messages(messages, rule, show_summary)
+            log(f"[{self.id}] Processed {result['processed']} unread messages for chat {chat_id}")
+            return result
         except Exception as e:
             log(f"[{self.id}] ERROR in _process_unread_messages: {traceback.format_exc()}")
             return {"success": False, "processed": 0, "error": str(e)}
@@ -1096,45 +1121,56 @@ class AutoForwarderPlugin(BasePlugin):
         
         return messages
 
-    def _process_historical_messages(self, chat_id, days):
+    def _process_historical_messages(self, chat_id, days, show_summary=False):
         """Processes historical messages for a single chat going back X days."""
         try:
             rule = self.forwarding_rules.get(chat_id)
             if not rule:
                 log(f"[{self.id}] No rule found for chat {chat_id}")
                 return {"success": False, "processed": 0, "error": "No rule configured"}
-            
+
             cutoff_timestamp = int(time.time()) - (days * 24 * 60 * 60)
             messages = self._scan_chat_history(chat_id, cutoff_timestamp)
-            
+
             if not messages:
                 log(f"[{self.id}] No historical messages found for chat {chat_id}")
                 return {"success": True, "processed": 0, "error": None}
-            
-            # Sort oldest first
-            messages.sort(key=lambda m: m.id)
-            
-            processed = 0
-            for msg in messages:
-                try:
-                    # Create MessageObject for proper processing
-                    msg_obj = self._create_message_object_safely(msg)
-                    if not msg_obj:
-                        continue
-                    
-                    # Check if message would pass all filters
-                    if self._would_message_pass_filters(msg_obj, chat_id):
-                        self._send_forwarded_message(msg_obj, rule)
-                        processed += 1
-                        time.sleep(0.5)  # Small delay to avoid spam
-                except Exception:
-                    log(f"[{self.id}] ERROR processing message {msg.id}: {traceback.format_exc()}")
-            
-            log(f"[{self.id}] Processed {processed} historical messages for chat {chat_id}")
-            return {"success": True, "processed": processed, "error": None}
+
+            result = self._process_messages(messages, rule, show_summary)
+            log(f"[{self.id}] Processed {result['processed']} historical messages for chat {chat_id}")
+            return result
         except Exception as e:
             log(f"[{self.id}] ERROR in _process_historical_messages: {traceback.format_exc()}")
             return {"success": False, "processed": 0, "error": str(e)}
+
+    def _process_messages(self, messages, rule, show_summary):
+        """Processes a list of messages using the supplied rule."""
+        messages.sort(key=lambda m: m.id)
+        summary = self._build_processing_summary(messages, rule)
+
+        if show_summary:
+            total_messages = len(summary["messages_to_process"])
+            # 0.5s per message delay + 0.3s buffer for network/overhead.
+            estimated_seconds = int(math.ceil(total_messages * 0.8))
+            estimate_text = self._format_processing_duration(estimated_seconds)
+            summary_parts = []
+            if summary["local_active"]:
+                summary_parts.append(f"Local: {summary['local_matches']}")
+            if summary["global_active"]:
+                summary_parts.append(f"Global: {summary['global_matches']}")
+            summary_parts.append(f"Est: ~{estimate_text} for {total_messages}")
+            BulletinHelper.show_info(" · ".join(summary_parts), get_last_fragment())
+
+        processed = 0
+        for msg_obj in summary["messages_to_process"]:
+            try:
+                self._send_forwarded_message(msg_obj, rule)
+                processed += 1
+                time.sleep(0.5)  # Small delay to avoid spam
+            except Exception:
+                log(f"[{self.id}] ERROR processing message: {traceback.format_exc()}")
+
+        return {"success": True, "processed": processed, "error": None}
 
     def _get_current_account_safely(self):
         """Get current account ID safely."""
@@ -1280,9 +1316,9 @@ class AutoForwarderPlugin(BasePlugin):
         BulletinHelper.show_info("Processing unread messages...", get_last_fragment())
         
         def process():
-            result = self._process_unread_messages(current_chat_id)
+            result = self._process_unread_messages(current_chat_id, show_summary=True)
             if result["success"]:
-                BulletinHelper.show_info(f"Processed {result['processed']} unread messages!", get_last_fragment())
+                BulletinHelper.show_info(f"Forwarded {result['processed']} unread messages!", get_last_fragment())
             else:
                 BulletinHelper.show_error(f"Error: {result['error']}", get_last_fragment())
         
@@ -1326,9 +1362,9 @@ class AutoForwarderPlugin(BasePlugin):
                 BulletinHelper.show_info(f"Processing last {days} days...", get_last_fragment())
                 
                 def process():
-                    result = self._process_historical_messages(current_chat_id, days)
+                    result = self._process_historical_messages(current_chat_id, days, show_summary=True)
                     if result["success"]:
-                        BulletinHelper.show_info(f"Processed {result['processed']} messages from last {days} days!", get_last_fragment())
+                        BulletinHelper.show_info(f"Forwarded {result['processed']} messages from last {days} days!", get_last_fragment())
                     else:
                         BulletinHelper.show_error(f"Error: {result['error']}", get_last_fragment())
                 
@@ -1861,10 +1897,10 @@ class AutoForwarderPlugin(BasePlugin):
                     errors.append(f"{chat_name}: {str(e)}")
             
             if errors:
-                error_msg = f"Processed {total_processed} messages. Errors: " + "; ".join(errors[:3])
+                error_msg = f"Forwarded {total_processed} messages. Errors: " + "; ".join(errors[:3])
                 BulletinHelper.show_error(error_msg, get_last_fragment())
             else:
-                BulletinHelper.show_info(f"Successfully processed {total_processed} unread messages!", get_last_fragment())
+                BulletinHelper.show_info(f"Forwarded {total_processed} unread messages!", get_last_fragment())
         
         threading.Thread(target=process_all, daemon=True).start()
 
@@ -1917,10 +1953,10 @@ class AutoForwarderPlugin(BasePlugin):
                             errors.append(f"{chat_name}: {str(e)}")
                     
                     if errors:
-                        error_msg = f"Processed {total_processed} messages. Errors: " + "; ".join(errors[:3])
+                        error_msg = f"Forwarded {total_processed} messages. Errors: " + "; ".join(errors[:3])
                         BulletinHelper.show_error(error_msg, get_last_fragment())
                     else:
-                        BulletinHelper.show_info(f"Successfully processed {total_processed} messages from last {days} days!", get_last_fragment())
+                        BulletinHelper.show_info(f"Forwarded {total_processed} messages from last {days} days!", get_last_fragment())
                 
                 threading.Thread(target=process_all, daemon=True).start()
             except ValueError:
