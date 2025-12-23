@@ -1,13 +1,13 @@
 # Auto Fwd Plugin Fork
 
-[![Version](https://img.shields.io/badge/version-1.9.9.9-blue.svg)](https://github.com/cbkii/Auto-Forwarder-Plugin/releases)
+[![Version](https://img.shields.io/badge/version-1.9.9.11-blue.svg)](https://github.com/cbkii/Auto-Forwarder-Plugin/releases)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Original Author](https://img.shields.io/badge/original%20author-%40T3SL4-blue.svg)](https://t.me/T3SL4)
 [![Fork Maintainer](https://img.shields.io/badge/fork%20by-%40cbkii-green.svg)](https://github.com/cbkii)
 
 An advanced plugin for **exteraGram** that gives you total control over message forwarding. Automatically copy or forward messages from any chat to another with powerful filters, an integrated auto-updater, and a robust engine for reliable, ordered delivery.
 
-> **This is a fork** of the [original Auto Forwarder Plugin](https://github.com/0x11DFE/Auto-Forwarder-Plugin) by @T3SL4. Version 1.9.9.9 builds upon the stable 1.9.0 release with additional features for batch processing and enhanced filtering capabilities.
+> **This is a fork** of the [original Auto Forwarder Plugin](https://github.com/0x11DFE/Auto-Forwarder-Plugin) by @T3SL4. This fork builds upon the stable 1.9.0 release with additional features for batch processing and enhanced filtering capabilities.
 
 > [!WARNING]
 > ### 🔐 Disclaimer – Read Before Using
@@ -18,7 +18,7 @@ An advanced plugin for **exteraGram** that gives you total control over message 
 ---
 
 ### 📚 Table of Contents
-* [What's New in v1.9.9.9](#-whats-new-in-v1999-fork)
+* [What's New in This Fork](#-whats-new-in-this-fork)
 * [Features](#-features)
 * [Installation](#%EF%B8%8F-installation)
 * [How to Use](#-how-to-use)
@@ -29,11 +29,9 @@ An advanced plugin for **exteraGram** that gives you total control over message 
 
 ---
 
-## 🆕 What's New in v1.9.9.9 (Fork)
+## 🆕 What's New in This Fork
 
 This fork extends the original v1.9.0 release with powerful batch processing capabilities and enhanced filtering options:
-
-> **📌 Note:** This is version **1.9.9.9** of the fork. The built-in auto-updater still points to the original repository and may show "v1.9.0" as the latest version. To stay updated with fork-specific features, bookmark this repository and check the [Releases](https://github.com/cbkii/Auto-Forwarder-Plugin/releases) page.
 
 ### New Features Added in This Fork:
 
@@ -49,7 +47,7 @@ This fork extends the original v1.9.0 release with powerful batch processing cap
 
 * **🌐 Global Keyword/Regex Filter:**
   * Set a **global keyword/regex pattern** in the main settings that can be applied across multiple rules.
-  * Each rule can optionally enable "**use global regex**" to apply this global filter in addition to its local filter.
+  * Each rule can optionally enable "**use global regex**" to apply this global filter alongside its local filter (matches either).
   * Perfect for maintaining consistent filtering criteria across multiple forwarding rules.
 
 * **💾 Persistent Last-Seen Tracking:**
@@ -92,7 +90,7 @@ All features from the upstream v1.9.0 release are included, such as:
 
 * **Advanced Filtering Engine:**
     * **Keyword & Regex:** Forward messages, media captions, or **documents with filenames** that contain specific keywords or match a regular expression.
-    * **Global Regex Filter:** Set a global keyword/regex pattern in the settings that can be applied to multiple rules. Each rule can optionally enable "use global regex" in addition to its local filter.
+    * **Global Regex Filter:** Set a global keyword/regex pattern in the settings that can be applied to multiple rules. Each rule can optionally enable "use global regex" alongside its local filter (matches either).
     * **Granular Content Control:** The "Text" filter is now split into "Text Messages" and "Media Captions," allowing you to forward media while stripping its caption, and vice-versa.
     * **Author Whitelisting:** Filter messages based on the author type (Users, Bots, Outgoing), or provide a specific, comma-separated list of User IDs or `@usernames` to exclusively forward messages *only* from them.
 
@@ -110,12 +108,12 @@ All features from the upstream v1.9.0 release are included, such as:
 
 * **🆕 Global Filtering (Fork Feature):**
     * **Global Keyword/Regex Filter:** Set a global filter pattern in settings that can be applied to multiple rules.
-    * **Per-Rule Toggle:** Each rule can independently enable "use global regex" to apply the global filter alongside its local filter.
+    * **Per-Rule Toggle:** Each rule can independently enable "use global regex" to apply the global filter alongside its local filter (matches either).
 
 
 ## 🛠️ Installation
 
-1.  Go to the [**Releases**](https://github.com/cbkii/Auto-Forwarder-Plugin/releases) page of this fork and download the latest `.py` file (v1.9.9.9 or newer).
+1.  Go to the [**Releases**](https://github.com/cbkii/Auto-Forwarder-Plugin/releases) page of this fork and download the latest `.py` file.
 2.  Using your device's file manager, **rename the file extension** from `.py` to `.plugin`. (Your file manager may warn you about changing the extension; accept the change.)
 3.  Open Telegram and send the `.plugin` file to yourself (e.g., in your "Saved Messages").
 4.  Tap on the file you just sent within the Telegram app.
@@ -123,7 +121,7 @@ All features from the upstream v1.9.0 release are included, such as:
 
 > **⚠️ Important Note About Updates:** The auto-updater built into this plugin currently points to the original repository by @T3SL4. This means:
 > - The "Check for Updates" button will check the original repository, not this fork
-> - You may see update notifications for older versions (like v1.9.0) even though you're on v1.9.9.9
+> - You may see update notifications for older versions (like v1.9.0) even though you're on this fork
 > - To get fork-specific updates, you'll need to manually download new versions from this fork's [Releases](https://github.com/cbkii/Auto-Forwarder-Plugin/releases) page
 > - Future versions of this fork may redirect the auto-updater to check this fork's releases instead
 
@@ -153,7 +151,7 @@ This plugin is configured entirely through the Telegram user interface.
 3.  A management dialog will appear, allowing you to **Modify** or **Delete** the rule for that chat.
 
 ### 🆕 Processing Unread or Historical Messages (Fork Feature)
-These batch processing features are exclusive to this fork (v1.9.9.9):
+These batch processing features are exclusive to this fork:
 
 #### For a Single Chat:
 1.  Go into a chat with an active forwarding rule.
@@ -177,21 +175,21 @@ All global settings and a list of all active rules can be found by going to:
 - **Album Buffering Timeout (ms):** How long to wait to collect all media in an album.
 - **Sequential Delay (Seconds):** The pause between each message to guarantee order. Set to `0` to restore high-speed parallel mode (order not guaranteed).
 - **Deduplication Window (Seconds):** Time window to ignore duplicate notifications from the client.
-- **🆕 Global Keyword/Regex Filter (Fork Feature):** An optional filter that can be applied to multiple rules. Enable "use global regex" in each rule to apply this filter in addition to the rule's local filter.
+- **🆕 Global Keyword/Regex Filter (Fork Feature):** An optional filter that can be applied to multiple rules. Enable "use global regex" in each rule to apply this filter alongside the rule's local filter (matches either).
 
 ### Global Batch Actions (Fork Features):
 - **🆕 Fwd Unread (All Rules):** Processes unread messages for all configured rules at once.
 - **🆕 Fwd Last X Days (All Rules):** Processes historical messages (1-30 days) for all configured rules at once.
 
 ### Other Actions:
-- **Check for Updates:** Checks for new plugin versions on GitHub. ⚠️ **Note:** Currently checks the original repository by @T3SL4, not this fork. To get fork-specific updates (v1.9.9.9+), check the [Releases](https://github.com/cbkii/Auto-Forwarder-Plugin/releases) page manually.
+- **Check for Updates:** Checks for new plugin versions on GitHub. ⚠️ **Note:** Currently checks the original repository by @T3SL4, not this fork. To get fork-specific updates, check the [Releases](https://github.com/cbkii/Auto-Forwarder-Plugin/releases) page manually.
 
 ### Per-Rule Settings:
 When creating or editing a rule, you can configure:
 - Destination chat/channel/topic
 - Content type filters (text, photos, videos, documents, etc.)
 - Keyword/regex filter (local to this rule)
-- **🆕 Use Global Regex (Fork Feature):** Toggle to apply the global keyword filter in addition to the local filter
+- **🆕 Use Global Regex (Fork Feature):** Toggle to apply the global keyword filter alongside the local filter (matches either)
 - Author filtering (users, bots, outgoing messages)
 - Author whitelist (specific user IDs or @usernames)
 
@@ -224,7 +222,7 @@ This project is licensed under the **GNU General Public License v3.0**. See the 
 
 ## 📋 Changelog
 
-### v1.9.9.9 (Fork) - Batch Processing & Enhanced Filtering
+### v1.9.9.11 (Fork) - Batch Processing & Enhanced Filtering
 
 This fork extends the original v1.9.0 release with the following enhancements:
 
@@ -242,7 +240,7 @@ This fork extends the original v1.9.0 release with the following enhancements:
 - **Global Keyword/Regex Filter:**
   - New global filter setting that can be applied across multiple rules
   - Per-rule "use global regex" toggle to enable/disable global filter for each rule
-  - Works in combination with local rule filters for maximum flexibility
+  - Matches if either local or global filters pass for maximum flexibility
 
 - **Persistent Last-Seen Tracking:**
   - Plugin now tracks the last processed message ID for each chat
@@ -261,7 +259,7 @@ This fork extends the original v1.9.0 release with the following enhancements:
 **📝 Metadata Changes:**
 - Updated plugin name to "Auto Fwd Fork"
 - Updated author to "@T3SL4,@cbkii"
-- Updated version to "1.9.9.9"
+- Updated version to "1.9.9.11"
 
 ### Base: v1.9.0 (Upstream) - The Sequential Engine & Stability Overhaul
 
