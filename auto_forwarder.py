@@ -506,6 +506,8 @@ class AutoForwarderPlugin(BasePlugin):
         message = message_object.messageOwner
         source_chat_id = self._get_id_from_peer(message.peer_id)
         rule = self.forwarding_rules.get(source_chat_id)
+        if not rule or not rule.get("enabled", False):
+            return
 
         with self.lock:
             event_key = None
@@ -524,27 +526,8 @@ class AutoForwarderPlugin(BasePlugin):
 
             self.processed_keys.append((event_key, current_time))
 
-        # Filter by author type
-        author_type = self._get_author_type(message)
-        if author_type == "outgoing" and not rule.get("forward_outgoing", True): return
-        if author_type == "user" and not rule.get("forward_users", True): return
-        if author_type == "bot" and not rule.get("forward_bots", True): return
-
-        # Filter by specific author
-        author_filter = rule.get("author_filter", "").strip()
-        if author_filter and (author_type == "user" or author_type == "bot"):
-            author_id = self._get_id_from_peer(message.from_id)
-            author_entity = self._get_chat_entity(author_id)
-            allowed_authors = [t.strip().lower().lstrip('@') for t in author_filter.split(',') if t.strip()]
-            match_found = False
-            if str(author_id) in allowed_authors:
-                match_found = True
-            if not match_found and author_entity and hasattr(author_entity, 'username') and author_entity.username:
-                if author_entity.username.lower() in allowed_authors:
-                    match_found = True
-            if not match_found:
-                log(f"[{self.id}] Dropping message from '{self._get_entity_name(author_entity)}' due to author filter.")
-                return
+        if not self._passes_non_keyword_filters(message_object, rule):
+            return
 
         # Apply anti-spam rate limit
         if self.antispam_delay_seconds > 0:
@@ -582,31 +565,14 @@ class AutoForwarderPlugin(BasePlugin):
 
     def _process_and_send(self, message_object, rule):
         """Performs final content checks and sends the message."""
-        message = message_object.messageOwner
-        
-        # Filter by content type (text, photo, etc.)
-        if not self._is_message_allowed_by_filters(message_object, rule):
-            return
-
         # Filter by keywords/regex (local and global)
         keyword_pattern = rule.get("keyword_pattern", "").strip()
         use_global_regex = rule.get("use_global_regex", False)
         global_pattern = self.get_setting(GLOBAL_KEYWORD_PATTERN, "").strip()
         
         if keyword_pattern or (use_global_regex and global_pattern):
-            text_to_check = message.message or ""
-            if message_object.isDocument():
-                doc = getattr(message.media, 'document', None)
-                filename = self._get_document_filename(doc)
-                if filename:
-                    text_to_check = f"{text_to_check} {filename}".strip()
+            text_to_check = self._get_keyword_text_for_message(message_object)
             if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
-                return
-        
-        # Filter by message length
-        is_text_based = not message.media or isinstance(message.media, (TLRPC.TL_messageMediaEmpty, TLRPC.TL_messageMediaWebPage))
-        if is_text_based:
-            if not (self.min_msg_length <= len(message.message or "") <= self.max_msg_length):
                 return
 
         self._send_forwarded_message(message_object, rule)
@@ -619,7 +585,8 @@ class AutoForwarderPlugin(BasePlugin):
             source_chat_id = self._get_id_from_peer(message_object.messageOwner.peer_id)
             rule = self.forwarding_rules.get(source_chat_id)
             if rule:
-                self._process_and_send(message_object, rule)
+                if self._passes_non_keyword_filters(message_object, rule):
+                    self._process_and_send(message_object, rule)
             del self.deferred_messages[event_key]
 
     def _process_album(self, grouped_id):
@@ -1075,32 +1042,9 @@ class AutoForwarderPlugin(BasePlugin):
                 log(f"[{self.id}] No unread messages found for chat {chat_id}")
                 return {"success": True, "processed": 0, "error": None}
 
-            messages.sort(key=lambda m: m.id)
-            summary = self._build_processing_summary(messages, rule)
-
-            if show_summary:
-                total_messages = len(summary["messages_to_process"])
-                estimated_seconds = int(math.ceil(total_messages * 1.0))
-                estimate_text = self._format_processing_duration(estimated_seconds)
-                summary_parts = []
-                if summary["local_active"]:
-                    summary_parts.append(f"Local: {summary['local_matches']}")
-                if summary["global_active"]:
-                    summary_parts.append(f"Global: {summary['global_matches']}")
-                summary_parts.append(f"Est: ~{estimate_text} for {total_messages}")
-                BulletinHelper.show_info(" · ".join(summary_parts), get_last_fragment())
-
-            processed = 0
-            for msg_obj in summary["messages_to_process"]:
-                try:
-                    self._send_forwarded_message(msg_obj, rule)
-                    processed += 1
-                    time.sleep(0.5)  # Small delay to avoid spam
-                except Exception:
-                    log(f"[{self.id}] ERROR processing message: {traceback.format_exc()}")
-
-            log(f"[{self.id}] Processed {processed} unread messages for chat {chat_id}")
-            return {"success": True, "processed": processed, "error": None}
+            result = self._process_messages(messages, rule, show_summary)
+            log(f"[{self.id}] Processed {result['processed']} unread messages for chat {chat_id}")
+            return result
         except Exception as e:
             log(f"[{self.id}] ERROR in _process_unread_messages: {traceback.format_exc()}")
             return {"success": False, "processed": 0, "error": str(e)}
@@ -1177,35 +1121,41 @@ class AutoForwarderPlugin(BasePlugin):
                 log(f"[{self.id}] No historical messages found for chat {chat_id}")
                 return {"success": True, "processed": 0, "error": None}
 
-            messages.sort(key=lambda m: m.id)
-            summary = self._build_processing_summary(messages, rule)
-
-            if show_summary:
-                total_messages = len(summary["messages_to_process"])
-                estimated_seconds = int(math.ceil(total_messages * 1.0))
-                estimate_text = self._format_processing_duration(estimated_seconds)
-                summary_parts = []
-                if summary["local_active"]:
-                    summary_parts.append(f"Local: {summary['local_matches']}")
-                if summary["global_active"]:
-                    summary_parts.append(f"Global: {summary['global_matches']}")
-                summary_parts.append(f"Est: ~{estimate_text} for {total_messages}")
-                BulletinHelper.show_info(" · ".join(summary_parts), get_last_fragment())
-
-            processed = 0
-            for msg_obj in summary["messages_to_process"]:
-                try:
-                    self._send_forwarded_message(msg_obj, rule)
-                    processed += 1
-                    time.sleep(0.5)  # Small delay to avoid spam
-                except Exception:
-                    log(f"[{self.id}] ERROR processing message: {traceback.format_exc()}")
-
-            log(f"[{self.id}] Processed {processed} historical messages for chat {chat_id}")
-            return {"success": True, "processed": processed, "error": None}
+            result = self._process_messages(messages, rule, show_summary)
+            log(f"[{self.id}] Processed {result['processed']} historical messages for chat {chat_id}")
+            return result
         except Exception as e:
             log(f"[{self.id}] ERROR in _process_historical_messages: {traceback.format_exc()}")
             return {"success": False, "processed": 0, "error": str(e)}
+
+    def _process_messages(self, messages, rule, show_summary):
+        """Processes a list of messages using the supplied rule."""
+        messages.sort(key=lambda m: m.id)
+        summary = self._build_processing_summary(messages, rule)
+
+        if show_summary:
+            total_messages = len(summary["messages_to_process"])
+            # 0.5s per message delay + 0.3s buffer for network/overhead.
+            estimated_seconds = int(math.ceil(total_messages * 0.8))
+            estimate_text = self._format_processing_duration(estimated_seconds)
+            summary_parts = []
+            if summary["local_active"]:
+                summary_parts.append(f"Local: {summary['local_matches']}")
+            if summary["global_active"]:
+                summary_parts.append(f"Global: {summary['global_matches']}")
+            summary_parts.append(f"Est: ~{estimate_text} for {total_messages}")
+            BulletinHelper.show_info(" · ".join(summary_parts), get_last_fragment())
+
+        processed = 0
+        for msg_obj in summary["messages_to_process"]:
+            try:
+                self._send_forwarded_message(msg_obj, rule)
+                processed += 1
+                time.sleep(0.5)  # Small delay to avoid spam
+            except Exception:
+                log(f"[{self.id}] ERROR processing message: {traceback.format_exc()}")
+
+        return {"success": True, "processed": processed, "error": None}
 
     def _get_current_account_safely(self):
         """Get current account ID safely."""

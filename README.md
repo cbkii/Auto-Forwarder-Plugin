@@ -253,6 +253,7 @@ This fork extends the original v1.9.0 release with the following enhancements:
 - Added `_get_unread_boundary()` to intelligently determine which messages to process
 - Implemented `_would_message_pass_filters()` for batch processing filter validation
 - Enhanced keyword filtering with `_passes_combined_keyword_filter()` to support both local and global filters
+- Added concise batch processing toasts with local/global match counts and time estimates
 - Added chat menu integration for easy access to batch processing features
 - Increased codebase from ~1,816 lines to ~2,366 lines (+550 lines, +30%)
 
