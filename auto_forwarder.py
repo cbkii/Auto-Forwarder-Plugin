@@ -1197,8 +1197,8 @@ class AutoForwarderPlugin(BasePlugin):
         if use_global and global_pattern:
             global_pass = self._passes_keyword_filter(text_to_check, global_pattern)
         
-        # Both must pass (logical AND)
-        return local_pass and global_pass
+        # Either filter may pass (logical OR)
+        return local_pass or global_pass
 
     # --- UI & Dialog Methods ---
     def create_settings(self) -> list:
@@ -1413,7 +1413,7 @@ class AutoForwarderPlugin(BasePlugin):
             checkbox_params.setMargins(margin_px, 0, margin_px, 0)
             
             use_global_regex_checkbox = CheckBox(activity)
-            use_global_regex_checkbox.setText("Also apply global regex filter")
+            use_global_regex_checkbox.setText("Match local OR global regex")
             use_global_regex_checkbox.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
             use_global_regex_checkbox.setButtonTintList(checkbox_tint_list)
             use_global_regex_checkbox.setLayoutParams(checkbox_params)
