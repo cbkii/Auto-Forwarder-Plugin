@@ -1180,25 +1180,23 @@ class AutoForwarderPlugin(BasePlugin):
         return None
 
     def _passes_combined_keyword_filter(self, text_to_check, local_pattern, use_global, global_pattern):
-        """Checks if text passes both local and global regex filters."""
+        """Checks if text passes local OR global regex filters."""
         if not local_pattern and not (use_global and global_pattern):
             return True
         
         if not text_to_check:
             return False
         
-        # Check local pattern
-        local_pass = True
         if local_pattern:
-            local_pass = self._passes_keyword_filter(text_to_check, local_pattern)
+            if self._passes_keyword_filter(text_to_check, local_pattern):
+                return True
         
-        # Check global pattern
-        global_pass = True
         if use_global and global_pattern:
-            global_pass = self._passes_keyword_filter(text_to_check, global_pattern)
+            if self._passes_keyword_filter(text_to_check, global_pattern):
+                return True
         
-        # Either filter may pass (logical OR)
-        return local_pass or global_pass
+        # No active filter matched
+        return False
 
     # --- UI & Dialog Methods ---
     def create_settings(self) -> list:
