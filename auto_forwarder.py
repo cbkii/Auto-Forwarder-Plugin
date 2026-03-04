@@ -1034,14 +1034,18 @@ class AutoForwarderPlugin(BasePlugin):
             # allowing all through (never-greedy contract).
             if local_active or use_global_regex:
                 text_to_check = self._get_keyword_text_for_message(msg_obj)
+                # Use _passes_combined_keyword_filter for the include/exclude
+                # decision to guarantee identical never-greedy semantics with
+                # the live path (global enabled with empty pattern → block ALL).
+                if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
+                    continue
+                # Track per-filter match counts for summary display only.
                 local_match = local_active and self._passes_keyword_filter(text_to_check, keyword_pattern)
                 global_match = global_active and self._passes_keyword_filter(text_to_check, global_pattern)
                 if local_match:
                     local_matches += 1
                 if global_match:
                     global_matches += 1
-                if not (local_match or global_match):
-                    continue
 
             messages_to_process.append(msg_obj)
 
