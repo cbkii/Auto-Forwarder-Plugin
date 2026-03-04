@@ -480,13 +480,21 @@ class AutoForwarderPlugin(BasePlugin):
         """
         source_chat_id = self._get_id_from_peer(message_object.messageOwner.peer_id)
         rule = self.forwarding_rules.get(source_chat_id)
-        if not rule or not rule.get("enabled", False):
+        # Default True: rules created before the "enabled" field was introduced
+        # should continue to work (backward compatibility).
+        if not rule or not rule.get("enabled", True):
             return
             
         message = message_object.messageOwner
         grouped_id = getattr(message, 'grouped_id', 0)
 
         if grouped_id != 0:
+            # Apply author-type and author-filter checks here, since album messages
+            # skip super_handle_message_event where these checks are normally done.
+            # include_content_length=False: content-type and length filters are
+            # applied later per-item inside _send_album.
+            if not self._passes_non_keyword_filters(message_object, rule, include_content_length=False):
+                return
             with self.lock:
                 if grouped_id not in self.album_buffer:
                     log(f"[{self.id}] Triage: Detected start of new album: {grouped_id}")
@@ -506,7 +514,7 @@ class AutoForwarderPlugin(BasePlugin):
         message = message_object.messageOwner
         source_chat_id = self._get_id_from_peer(message.peer_id)
         rule = self.forwarding_rules.get(source_chat_id)
-        if not rule or not rule.get("enabled", False):
+        if not rule or not rule.get("enabled", True):
             return
 
         with self.lock:
@@ -574,15 +582,15 @@ class AutoForwarderPlugin(BasePlugin):
         # Filter by message length
         is_text_based = not message.media or isinstance(message.media, (TLRPC.TL_messageMediaEmpty, TLRPC.TL_messageMediaWebPage))
         if is_text_based:
-            if not (self.min_msg_length <= len(message.message or "") <= self.max_msg_length):
+            if not (self.min_msg_length <= len(str(message.message) if message.message else "") <= self.max_msg_length):
                 return
 
         # Filter by keywords/regex (local and global)
         keyword_pattern = rule.get("keyword_pattern", "").strip()
         use_global_regex = rule.get("use_global_regex", False)
-        global_pattern = self.get_setting(GLOBAL_KEYWORD_PATTERN, "").strip()
-        
-        if keyword_pattern or (use_global_regex and global_pattern):
+        global_pattern = str(self.get_setting(GLOBAL_KEYWORD_PATTERN, "") or "").strip()
+
+        if keyword_pattern or use_global_regex:
             text_to_check = self._get_keyword_text_for_message(message_object)
             if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
                 return
@@ -596,7 +604,7 @@ class AutoForwarderPlugin(BasePlugin):
             message_object, _ = self.deferred_messages[event_key]
             source_chat_id = self._get_id_from_peer(message_object.messageOwner.peer_id)
             rule = self.forwarding_rules.get(source_chat_id)
-            if rule:
+            if rule and rule.get("enabled", True):
                 if self._passes_non_keyword_filters(message_object, rule, include_content_length=False):
                     self._process_and_send(message_object, rule)
             del self.deferred_messages[event_key]
@@ -614,7 +622,7 @@ class AutoForwarderPlugin(BasePlugin):
         first_message = first_message_obj.messageOwner
         source_chat_id = self._get_id_from_peer(first_message.peer_id)
         rule = self.forwarding_rules.get(source_chat_id)
-        if not rule:
+        if not rule or not rule.get("enabled", True):
             return
 
         self._send_album(album_data['messages'], rule)
@@ -705,20 +713,20 @@ class AutoForwarderPlugin(BasePlugin):
         filters = rule.get("filters", {})
         keyword_pattern = rule.get("keyword_pattern", "").strip()
         use_global_regex = rule.get("use_global_regex", False)
-        global_pattern = self.get_setting(GLOBAL_KEYWORD_PATTERN, "").strip()
+        global_pattern = str(self.get_setting(GLOBAL_KEYWORD_PATTERN, "") or "").strip()
         topic_id = rule.get("destination_topic_id", 0)
 
         try:
-            if keyword_pattern or (use_global_regex and global_pattern):
+            if keyword_pattern or use_global_regex:
                 full_text_to_check = ""
                 for msg_obj in message_objects:
                     msg = msg_obj.messageOwner
                     if not msg: continue
-                    if msg.message: full_text_to_check += f" {msg.message}"
+                    if msg.message: full_text_to_check += f" {str(msg.message)}"
                     if msg_obj.isDocument():
                         doc = getattr(msg.media, 'document', None)
                         filename = self._get_document_filename(doc)
-                        if filename: full_text_to_check += f" {filename}"
+                        if filename: full_text_to_check += f" {str(filename)}"
                 if not self._passes_combined_keyword_filter(full_text_to_check.strip(), keyword_pattern, use_global_regex, global_pattern): return
 
             req = TLRPC.TL_messages_sendMultiMedia()
@@ -917,13 +925,13 @@ class AutoForwarderPlugin(BasePlugin):
     def _get_keyword_text_for_message(self, message_obj):
         """Builds the text used for keyword matching, including document filenames."""
         message = message_obj.messageOwner
-        text_to_check = message.message or ""
+        text_to_check = str(message.message) if message.message else ""
         if message_obj.isDocument():
             doc = getattr(message.media, 'document', None)
             if doc:
                 filename = self._get_document_filename(doc)
                 if filename:
-                    text_to_check = f"{text_to_check} {filename}".strip()
+                    text_to_check = f"{text_to_check} {str(filename)}".strip()
         return text_to_check
 
     def _passes_non_keyword_filters(self, message_obj, rule, include_content_length=True, log_failures=False):
@@ -960,7 +968,7 @@ class AutoForwarderPlugin(BasePlugin):
 
             is_text_based = not message.media or isinstance(message.media, (TLRPC.TL_messageMediaEmpty, TLRPC.TL_messageMediaWebPage))
             if is_text_based:
-                if not (self.min_msg_length <= len(message.message or "") <= self.max_msg_length):
+                if not (self.min_msg_length <= len(str(message.message) if message.message else "") <= self.max_msg_length):
                     return False
 
         return True
@@ -977,9 +985,9 @@ class AutoForwarderPlugin(BasePlugin):
 
             keyword_pattern = rule.get("keyword_pattern", "").strip()
             use_global_regex = rule.get("use_global_regex", False)
-            global_pattern = self.get_setting(GLOBAL_KEYWORD_PATTERN, "").strip()
+            global_pattern = str(self.get_setting(GLOBAL_KEYWORD_PATTERN, "") or "").strip()
 
-            if keyword_pattern or (use_global_regex and global_pattern):
+            if keyword_pattern or use_global_regex:
                 text_to_check = self._get_keyword_text_for_message(message_obj)
                 if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
                     return False
@@ -1005,7 +1013,7 @@ class AutoForwarderPlugin(BasePlugin):
         """Builds summary stats and message objects for processing."""
         keyword_pattern = rule.get("keyword_pattern", "").strip()
         use_global_regex = rule.get("use_global_regex", False)
-        global_pattern = self.get_setting(GLOBAL_KEYWORD_PATTERN, "").strip()
+        global_pattern = str(self.get_setting(GLOBAL_KEYWORD_PATTERN, "") or "").strip()
         local_active = bool(keyword_pattern)
         global_active = bool(use_global_regex and global_pattern)
 
@@ -1021,16 +1029,23 @@ class AutoForwarderPlugin(BasePlugin):
             if not self._passes_non_keyword_filters(msg_obj, rule):
                 continue
 
-            if local_active or global_active:
+            # Use `use_global_regex` (not `global_active`) so that enabling global
+            # filtering with an empty pattern still BLOCKS messages rather than
+            # allowing all through (never-greedy contract).
+            if local_active or use_global_regex:
                 text_to_check = self._get_keyword_text_for_message(msg_obj)
+                # Use _passes_combined_keyword_filter for the include/exclude
+                # decision to guarantee identical never-greedy semantics with
+                # the live path (global enabled with empty pattern → block ALL).
+                if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
+                    continue
+                # Track per-filter match counts for summary display only.
                 local_match = local_active and self._passes_keyword_filter(text_to_check, keyword_pattern)
                 global_match = global_active and self._passes_keyword_filter(text_to_check, global_pattern)
                 if local_match:
                     local_matches += 1
                 if global_match:
                     global_matches += 1
-                if not (local_match or global_match):
-                    continue
 
             messages_to_process.append(msg_obj)
 
@@ -1049,6 +1064,9 @@ class AutoForwarderPlugin(BasePlugin):
             if not rule:
                 log(f"[{self.id}] No rule found for chat {chat_id}")
                 return {"success": False, "processed": 0, "error": "No rule configured"}
+            if not rule.get("enabled", True):
+                log(f"[{self.id}] Rule for chat {chat_id} is disabled, skipping unread processing.")
+                return {"success": False, "processed": 0, "error": "Rule is disabled"}
 
             boundary = self._get_unread_boundary(chat_id)
             messages = self._get_unread_messages_after_boundary(chat_id, boundary, limit=500)
@@ -1128,6 +1146,9 @@ class AutoForwarderPlugin(BasePlugin):
             if not rule:
                 log(f"[{self.id}] No rule found for chat {chat_id}")
                 return {"success": False, "processed": 0, "error": "No rule configured"}
+            if not rule.get("enabled", True):
+                log(f"[{self.id}] Rule for chat {chat_id} is disabled, skipping historical processing.")
+                return {"success": False, "processed": 0, "error": "Rule is disabled"}
 
             cutoff_timestamp = int(time.time()) - (days * 24 * 60 * 60)
             messages = self._scan_chat_history(chat_id, cutoff_timestamp)
@@ -1217,6 +1238,11 @@ class AutoForwarderPlugin(BasePlugin):
 
     def _passes_combined_keyword_filter(self, text_to_check, local_pattern, use_global, global_pattern):
         """Checks if text passes local OR global regex filters."""
+        # If global filtering is enabled but no pattern has been configured yet,
+        # block the message – forwarding must never be greedy.
+        if use_global and not global_pattern:
+            return False
+
         if not local_pattern and not (use_global and global_pattern):
             return True
         
@@ -2033,12 +2059,16 @@ class AutoForwarderPlugin(BasePlugin):
             return True
         if not text_to_check:
             return False
+        # Ensure Python str types so re module and str operations work correctly
+        # regardless of whether values come from Java/Chaquopy or Python.
+        p = str(pattern)
+        t = str(text_to_check)
         try:
-            compiled_regex = re.compile(pattern, re.IGNORECASE)
-            if compiled_regex.search(text_to_check):
+            compiled_regex = re.compile(p, re.IGNORECASE | re.UNICODE)
+            if compiled_regex.search(t):
                 return True
         except re.error:
-            if pattern.lower() in text_to_check.lower():
+            if p.lower() in t.lower():
                 return True
         return False
 
