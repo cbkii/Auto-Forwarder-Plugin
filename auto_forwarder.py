@@ -480,13 +480,21 @@ class AutoForwarderPlugin(BasePlugin):
         """
         source_chat_id = self._get_id_from_peer(message_object.messageOwner.peer_id)
         rule = self.forwarding_rules.get(source_chat_id)
-        if not rule or not rule.get("enabled", False):
+        # Default True: rules created before the "enabled" field was introduced
+        # should continue to work (backward compatibility).
+        if not rule or not rule.get("enabled", True):
             return
             
         message = message_object.messageOwner
         grouped_id = getattr(message, 'grouped_id', 0)
 
         if grouped_id != 0:
+            # Apply author-type and author-filter checks here, since album messages
+            # skip super_handle_message_event where these checks are normally done.
+            # include_content_length=False: content-type and length filters are
+            # applied later per-item inside _send_album.
+            if not self._passes_non_keyword_filters(message_object, rule, include_content_length=False):
+                return
             with self.lock:
                 if grouped_id not in self.album_buffer:
                     log(f"[{self.id}] Triage: Detected start of new album: {grouped_id}")
@@ -506,7 +514,7 @@ class AutoForwarderPlugin(BasePlugin):
         message = message_object.messageOwner
         source_chat_id = self._get_id_from_peer(message.peer_id)
         rule = self.forwarding_rules.get(source_chat_id)
-        if not rule or not rule.get("enabled", False):
+        if not rule or not rule.get("enabled", True):
             return
 
         with self.lock:
@@ -574,7 +582,7 @@ class AutoForwarderPlugin(BasePlugin):
         # Filter by message length
         is_text_based = not message.media or isinstance(message.media, (TLRPC.TL_messageMediaEmpty, TLRPC.TL_messageMediaWebPage))
         if is_text_based:
-            if not (self.min_msg_length <= len(message.message or "") <= self.max_msg_length):
+            if not (self.min_msg_length <= len(str(message.message) if message.message else "") <= self.max_msg_length):
                 return
 
         # Filter by keywords/regex (local and global)
@@ -596,7 +604,7 @@ class AutoForwarderPlugin(BasePlugin):
             message_object, _ = self.deferred_messages[event_key]
             source_chat_id = self._get_id_from_peer(message_object.messageOwner.peer_id)
             rule = self.forwarding_rules.get(source_chat_id)
-            if rule:
+            if rule and rule.get("enabled", True):
                 if self._passes_non_keyword_filters(message_object, rule, include_content_length=False):
                     self._process_and_send(message_object, rule)
             del self.deferred_messages[event_key]
@@ -614,7 +622,7 @@ class AutoForwarderPlugin(BasePlugin):
         first_message = first_message_obj.messageOwner
         source_chat_id = self._get_id_from_peer(first_message.peer_id)
         rule = self.forwarding_rules.get(source_chat_id)
-        if not rule:
+        if not rule or not rule.get("enabled", True):
             return
 
         self._send_album(album_data['messages'], rule)
@@ -960,7 +968,7 @@ class AutoForwarderPlugin(BasePlugin):
 
             is_text_based = not message.media or isinstance(message.media, (TLRPC.TL_messageMediaEmpty, TLRPC.TL_messageMediaWebPage))
             if is_text_based:
-                if not (self.min_msg_length <= len(message.message or "") <= self.max_msg_length):
+                if not (self.min_msg_length <= len(str(message.message) if message.message else "") <= self.max_msg_length):
                     return False
 
         return True
@@ -1052,6 +1060,9 @@ class AutoForwarderPlugin(BasePlugin):
             if not rule:
                 log(f"[{self.id}] No rule found for chat {chat_id}")
                 return {"success": False, "processed": 0, "error": "No rule configured"}
+            if not rule.get("enabled", True):
+                log(f"[{self.id}] Rule for chat {chat_id} is disabled, skipping unread processing.")
+                return {"success": False, "processed": 0, "error": "Rule is disabled"}
 
             boundary = self._get_unread_boundary(chat_id)
             messages = self._get_unread_messages_after_boundary(chat_id, boundary, limit=500)
@@ -1131,6 +1142,9 @@ class AutoForwarderPlugin(BasePlugin):
             if not rule:
                 log(f"[{self.id}] No rule found for chat {chat_id}")
                 return {"success": False, "processed": 0, "error": "No rule configured"}
+            if not rule.get("enabled", True):
+                log(f"[{self.id}] Rule for chat {chat_id} is disabled, skipping historical processing.")
+                return {"success": False, "processed": 0, "error": "Rule is disabled"}
 
             cutoff_timestamp = int(time.time()) - (days * 24 * 60 * 60)
             messages = self._scan_chat_history(chat_id, cutoff_timestamp)
