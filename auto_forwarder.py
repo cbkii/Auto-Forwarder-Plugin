@@ -85,7 +85,7 @@ __id__ = "auto_forwarder"
 __name__ = "Auto Fwd Fork"
 __description__ = "Sets up forwarding rules for any chat, including users, groups, and channels."
 __author__ = "@T3SL4,@cbkii"
-__version__ = "1.9.9.11"
+__version__ = "1.9.9.12"
 __min_version__ = "11.9.1"
 __icon__ = "msg_arrow_forward"
 
@@ -587,12 +587,12 @@ class AutoForwarderPlugin(BasePlugin):
 
         # Filter by keywords/regex (local and global)
         keyword_pattern = rule.get("keyword_pattern", "").strip()
-        use_global_regex = rule.get("use_global_regex", False)
+        use_local_only = rule.get("use_local_only", False)
         global_pattern = str(self.get_setting(GLOBAL_KEYWORD_PATTERN, "") or "").strip()
 
-        if keyword_pattern or use_global_regex:
+        if keyword_pattern or (not use_local_only and global_pattern):
             text_to_check = self._get_keyword_text_for_message(message_object)
-            if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
+            if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_local_only, global_pattern):
                 return
 
         self._send_forwarded_message(message_object, rule)
@@ -712,12 +712,12 @@ class AutoForwarderPlugin(BasePlugin):
         quote_replies = rule.get("quote_replies", True)
         filters = rule.get("filters", {})
         keyword_pattern = rule.get("keyword_pattern", "").strip()
-        use_global_regex = rule.get("use_global_regex", False)
+        use_local_only = rule.get("use_local_only", False)
         global_pattern = str(self.get_setting(GLOBAL_KEYWORD_PATTERN, "") or "").strip()
         topic_id = rule.get("destination_topic_id", 0)
 
         try:
-            if keyword_pattern or use_global_regex:
+            if keyword_pattern or (not use_local_only and global_pattern):
                 full_text_to_check = ""
                 for msg_obj in message_objects:
                     msg = msg_obj.messageOwner
@@ -727,7 +727,7 @@ class AutoForwarderPlugin(BasePlugin):
                         doc = getattr(msg.media, 'document', None)
                         filename = self._get_document_filename(doc)
                         if filename: full_text_to_check += f" {str(filename)}"
-                if not self._passes_combined_keyword_filter(full_text_to_check.strip(), keyword_pattern, use_global_regex, global_pattern): return
+                if not self._passes_combined_keyword_filter(full_text_to_check.strip(), keyword_pattern, use_local_only, global_pattern): return
 
             req = TLRPC.TL_messages_sendMultiMedia()
             req.peer = get_messages_controller().getInputPeer(to_peer_id)
@@ -984,12 +984,12 @@ class AutoForwarderPlugin(BasePlugin):
                 return False
 
             keyword_pattern = rule.get("keyword_pattern", "").strip()
-            use_global_regex = rule.get("use_global_regex", False)
+            use_local_only = rule.get("use_local_only", False)
             global_pattern = str(self.get_setting(GLOBAL_KEYWORD_PATTERN, "") or "").strip()
 
-            if keyword_pattern or use_global_regex:
+            if keyword_pattern or (not use_local_only and global_pattern):
                 text_to_check = self._get_keyword_text_for_message(message_obj)
-                if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
+                if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_local_only, global_pattern):
                     return False
 
             return True
@@ -1012,10 +1012,10 @@ class AutoForwarderPlugin(BasePlugin):
     def _build_processing_summary(self, messages, rule):
         """Builds summary stats and message objects for processing."""
         keyword_pattern = rule.get("keyword_pattern", "").strip()
-        use_global_regex = rule.get("use_global_regex", False)
+        use_local_only = rule.get("use_local_only", False)
         global_pattern = str(self.get_setting(GLOBAL_KEYWORD_PATTERN, "") or "").strip()
         local_active = bool(keyword_pattern)
-        global_active = bool(use_global_regex and global_pattern)
+        global_active = bool(not use_local_only and global_pattern)
 
         local_matches = 0
         global_matches = 0
@@ -1029,15 +1029,9 @@ class AutoForwarderPlugin(BasePlugin):
             if not self._passes_non_keyword_filters(msg_obj, rule):
                 continue
 
-            # Use `use_global_regex` (not `global_active`) so that enabling global
-            # filtering with an empty pattern still BLOCKS messages rather than
-            # allowing all through (never-greedy contract).
-            if local_active or use_global_regex:
+            if local_active or global_active:
                 text_to_check = self._get_keyword_text_for_message(msg_obj)
-                # Use _passes_combined_keyword_filter for the include/exclude
-                # decision to guarantee identical never-greedy semantics with
-                # the live path (global enabled with empty pattern → block ALL).
-                if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
+                if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_local_only, global_pattern):
                     continue
                 # Track per-filter match counts for summary display only.
                 local_match = local_active and self._passes_keyword_filter(text_to_check, keyword_pattern)
@@ -1236,28 +1230,31 @@ class AutoForwarderPlugin(BasePlugin):
         
         return None
 
-    def _passes_combined_keyword_filter(self, text_to_check, local_pattern, use_global, global_pattern):
-        """Checks if text passes local OR global regex filters."""
-        # If global filtering is enabled but no pattern has been configured yet,
-        # block the message – forwarding must never be greedy.
-        if use_global and not global_pattern:
-            return False
+    def _passes_combined_keyword_filter(self, text_to_check, local_pattern, use_local_only, global_pattern):
+        """Checks if text passes keyword/regex filters.
 
-        if not local_pattern and not (use_global and global_pattern):
+        Both local and global patterns are always considered unless *use_local_only*
+        is True, in which case the global pattern is ignored.  Blank (empty) fields
+        are never used for matching – they are treated as inactive to prevent
+        greedy / catch-all behaviour.
+        """
+        effective_local = (local_pattern or "").strip()
+        effective_global = "" if use_local_only else (global_pattern or "").strip()
+
+        # No active filter patterns → pass through (no keyword restriction).
+        if not effective_local and not effective_global:
             return True
-        
+
         if not text_to_check:
             return False
-        
-        if local_pattern:
-            if self._passes_keyword_filter(text_to_check, local_pattern):
-                return True
-        
-        if use_global and global_pattern:
-            if self._passes_keyword_filter(text_to_check, global_pattern):
-                return True
-        
-        # No active filter matched
+
+        if effective_local and self._passes_keyword_filter(text_to_check, effective_local):
+            return True
+
+        if effective_global and self._passes_keyword_filter(text_to_check, effective_global):
+            return True
+
+        # No active filter matched.
         return False
 
     # --- UI & Dialog Methods ---
@@ -1472,12 +1469,12 @@ class AutoForwarderPlugin(BasePlugin):
             checkbox_params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             checkbox_params.setMargins(margin_px, 0, margin_px, 0)
             
-            use_global_regex_checkbox = CheckBox(activity)
-            use_global_regex_checkbox.setText("Match local OR global regex")
-            use_global_regex_checkbox.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
-            use_global_regex_checkbox.setButtonTintList(checkbox_tint_list)
-            use_global_regex_checkbox.setLayoutParams(checkbox_params)
-            main_layout.addView(use_global_regex_checkbox)
+            use_local_only_checkbox = CheckBox(activity)
+            use_local_only_checkbox.setText("Use local only")
+            use_local_only_checkbox.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
+            use_local_only_checkbox.setButtonTintList(checkbox_tint_list)
+            use_local_only_checkbox.setLayoutParams(checkbox_params)
+            main_layout.addView(use_local_only_checkbox)
     
             drop_author_checkbox = CheckBox(activity)
             drop_author_checkbox.setText("Remove Original Author (Copy)")
@@ -1574,7 +1571,7 @@ class AutoForwarderPlugin(BasePlugin):
                     topic_id_input.setText(str(existing_topic_id))
     
                 keyword_filter_input.setText(existing_rule.get("keyword_pattern", "")); author_filter_input.setText(existing_rule.get("author_filter", ""))
-                use_global_regex_checkbox.setChecked(existing_rule.get("use_global_regex", False))
+                use_local_only_checkbox.setChecked(existing_rule.get("use_local_only", False))
                 drop_author_checkbox.setChecked(existing_rule.get("drop_author", True)); quote_replies_checkbox.setChecked(existing_rule.get("quote_replies", True))
                 forward_users_checkbox.setChecked(existing_rule.get("forward_users", True)); forward_bots_checkbox.setChecked(existing_rule.get("forward_bots", True))
                 forward_outgoing_checkbox.setChecked(existing_rule.get("forward_outgoing", True))
@@ -1595,7 +1592,7 @@ class AutoForwarderPlugin(BasePlugin):
                 self._process_destination_input(
                     source_id, source_name, input_field.getText().toString(),
                     keyword_filter_input.getText().toString(), author_filter_input.getText().toString(),
-                    use_global_regex_checkbox.isChecked(),
+                    use_local_only_checkbox.isChecked(),
                     drop_author_checkbox.isChecked(), quote_replies_checkbox.isChecked(),
                     forward_to_topic_checkbox.isChecked(), topic_id,
                     forward_users_checkbox.isChecked(), forward_bots_checkbox.isChecked(),
@@ -1607,7 +1604,7 @@ class AutoForwarderPlugin(BasePlugin):
     
             all_ui_elements = {
                 'input_field': input_field, 'keyword_filter_input': keyword_filter_input,
-                'use_global_regex_checkbox': use_global_regex_checkbox,
+                'use_local_only_checkbox': use_local_only_checkbox,
                 'drop_author_checkbox': drop_author_checkbox, 'quote_replies_checkbox': quote_replies_checkbox,
                 'forward_to_topic_checkbox': forward_to_topic_checkbox, 'topic_id_input': topic_id_input,
                 'author_filter_input': author_filter_input, 'forward_users_checkbox': forward_users_checkbox,
@@ -1631,7 +1628,7 @@ class AutoForwarderPlugin(BasePlugin):
             rule_settings = {
                 "keyword_pattern": ui_elements['keyword_filter_input'].getText().toString(),
                 "author_filter": ui_elements['author_filter_input'].getText().toString(),
-                "use_global_regex": ui_elements['use_global_regex_checkbox'].isChecked(),
+                "use_local_only": ui_elements['use_local_only_checkbox'].isChecked(),
                 "drop_author": ui_elements['drop_author_checkbox'].isChecked(),
                 "quote_replies": ui_elements['quote_replies_checkbox'].isChecked(),
                 "forward_to_topic": ui_elements['forward_to_topic_checkbox'].isChecked(),
@@ -1736,7 +1733,7 @@ class AutoForwarderPlugin(BasePlugin):
     # --- Rule Processing and Resolution ---
     def _process_destination_input(self, source_id, source_name, user_input, *args):
         """Processes the destination provided manually in the settings dialog."""
-        (keyword_pattern, author_filter, use_global_regex, drop_author, quote_replies, forward_to_topic, 
+        (keyword_pattern, author_filter, use_local_only, drop_author, quote_replies, forward_to_topic, 
          topic_id, forward_users, forward_bots, forward_outgoing, filter_settings) = args
 
         cleaned_input = (user_input or "").strip()
@@ -1745,7 +1742,7 @@ class AutoForwarderPlugin(BasePlugin):
             return
 
         rule_settings = {
-            "keyword_pattern": keyword_pattern, "author_filter": author_filter, "use_global_regex": use_global_regex,
+            "keyword_pattern": keyword_pattern, "author_filter": author_filter, "use_local_only": use_local_only,
             "drop_author": drop_author, "quote_replies": quote_replies, "forward_to_topic": forward_to_topic, 
             "destination_topic_id": topic_id, "forward_users": forward_users, "forward_bots": forward_bots, 
             "forward_outgoing": forward_outgoing, "filter_settings": filter_settings
@@ -1863,7 +1860,7 @@ class AutoForwarderPlugin(BasePlugin):
             "quote_replies": rule_settings["quote_replies"],
             "destination_topic_id": topic_id,
             "keyword_pattern": rule_settings["keyword_pattern"],
-            "use_global_regex": rule_settings.get("use_global_regex", False),
+            "use_local_only": rule_settings.get("use_local_only", False),
             "author_filter": rule_settings["author_filter"],
             "forward_users": rule_settings["forward_users"],
             "forward_bots": rule_settings["forward_bots"],
