@@ -1,6 +1,6 @@
 # Auto Fwd Plugin Fork
 
-[![Version](https://img.shields.io/badge/version-1.9.9.12-blue.svg)](https://github.com/cbkii/Auto-Forwarder-Plugin/releases)
+[![Version](https://img.shields.io/badge/version-1.9.9.13-blue.svg)](https://github.com/cbkii/Auto-Forwarder-Plugin/releases)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Original Author](https://img.shields.io/badge/original%20author-%40T3SL4-blue.svg)](https://t.me/T3SL4)
 [![Fork Maintainer](https://img.shields.io/badge/fork%20by-%40cbkii-green.svg)](https://github.com/cbkii)
@@ -221,6 +221,23 @@ This project is licensed under the **GNU General Public License v3.0**. See the 
 ---
 
 ## 📋 Changelog
+
+### v1.9.9.13 (Fork) - Global Destination Fallback & Edit-Dialog Fix
+
+**🐛 Bug Fix:**
+- **Destination field no longer shows a leading `-` when editing rules.** Channels and groups are stored internally with a negative ID; the edit dialog now shows the absolute (positive) value, matching what a user would normally enter.
+
+**🆕 New Feature — Global Destination Fallback:**
+- **Global destination setting** added to the main settings page under "Global destination (fallback)". Accepts a @username, invite link, or numeric chat ID — the same formats as a per-rule destination.
+- When a rule's local destination is left blank (or is set to 0), messages are forwarded to the global destination instead.
+- If neither a local nor a global destination is configured, forwarding is skipped (never silently dropped to an unknown chat).
+- The per-rule destination input field now shows a hint "(blank = use global)" when a global destination is already set.
+- Rules in the Active Rules list display "(global destination)" when their local destination is unset.
+
+**📝 Metadata Changes:**
+- Updated version to "1.9.9.13"
+
+---
 
 ### v1.9.9.12 (Fork) - Local-Only Toggle & Never-Greedy Blank Fields
 
