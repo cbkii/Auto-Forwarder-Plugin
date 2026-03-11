@@ -1757,6 +1757,13 @@ class AutoForwarderPlugin(BasePlugin):
         (keyword_pattern, author_filter, use_local_only, drop_author, quote_replies, forward_to_topic, 
          topic_id, forward_users, forward_bots, forward_outgoing, filter_settings) = args
 
+        rule_settings = {
+            "keyword_pattern": keyword_pattern, "author_filter": author_filter, "use_local_only": use_local_only,
+            "drop_author": drop_author, "quote_replies": quote_replies, "forward_to_topic": forward_to_topic, 
+            "destination_topic_id": topic_id, "forward_users": forward_users, "forward_bots": forward_bots, 
+            "forward_outgoing": forward_outgoing, "filter_settings": filter_settings
+        }
+
         cleaned_input = (user_input or "").strip()
         if not cleaned_input:
             global_dest = int(self.get_setting(GLOBAL_DESTINATION, 0) or 0)
@@ -1766,13 +1773,6 @@ class AutoForwarderPlugin(BasePlugin):
             # No local destination — rule will use the global destination at runtime.
             self._finalize_rule(source_id, source_name, 0, "(global destination)", rule_settings)
             return
-
-        rule_settings = {
-            "keyword_pattern": keyword_pattern, "author_filter": author_filter, "use_local_only": use_local_only,
-            "drop_author": drop_author, "quote_replies": quote_replies, "forward_to_topic": forward_to_topic, 
-            "destination_topic_id": topic_id, "forward_users": forward_users, "forward_bots": forward_bots, 
-            "forward_outgoing": forward_outgoing, "filter_settings": filter_settings
-        }
 
         if "/joinchat/" in cleaned_input or "/+" in cleaned_input:
             self._resolve_as_invite_link(cleaned_input, source_id, source_name, rule_settings)
@@ -2449,7 +2449,13 @@ class AutoForwarderPlugin(BasePlugin):
                 rules_data = []
                 for source_id, rule_data in sorted_rules:
                     source_name = self._get_chat_name(source_id)
-                    dest_name = self._get_chat_name(rule_data.get("destination", 0)) if rule_data.get("destination") else "(global destination)"
+                    local_dest = rule_data.get("destination", 0)
+                    if local_dest:
+                        dest_name = self._get_chat_name(local_dest)
+                    elif int(self.get_setting(GLOBAL_DESTINATION, 0) or 0):
+                        dest_name = "(global destination)"
+                    else:
+                        dest_name = "⚠ No destination set"
                     drop_author = rule_data.get("drop_author", True)
                     rules_data.append({
                         "source_id": source_id,
