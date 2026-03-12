@@ -1,6 +1,6 @@
 # Auto Fwd Plugin Fork
 
-[![Version](https://img.shields.io/badge/version-1.9.9.11-blue.svg)](https://github.com/cbkii/Auto-Forwarder-Plugin/releases)
+[![Version](https://img.shields.io/badge/version-1.9.9.13-blue.svg)](https://github.com/cbkii/Auto-Forwarder-Plugin/releases)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Original Author](https://img.shields.io/badge/original%20author-%40T3SL4-blue.svg)](https://t.me/T3SL4)
 [![Fork Maintainer](https://img.shields.io/badge/fork%20by-%40cbkii-green.svg)](https://github.com/cbkii)
@@ -47,7 +47,7 @@ This fork extends the original v1.9.0 release with powerful batch processing cap
 
 * **🌐 Global Keyword/Regex Filter:**
   * Set a **global keyword/regex pattern** in the main settings that can be applied across multiple rules.
-  * Each rule can optionally enable "**use global regex**" to apply this global filter alongside its local filter (matches either).
+  * Each rule can optionally enable "**Use local only**" to restrict matching to only the local filter (omits global).
   * Perfect for maintaining consistent filtering criteria across multiple forwarding rules.
 
 * **💾 Persistent Last-Seen Tracking:**
@@ -90,7 +90,7 @@ All features from the upstream v1.9.0 release are included, such as:
 
 * **Advanced Filtering Engine:**
     * **Keyword & Regex:** Forward messages, media captions, or **documents with filenames** that contain specific keywords or match a regular expression.
-    * **Global Regex Filter:** Set a global keyword/regex pattern in the settings that can be applied to multiple rules. Each rule can optionally enable "use global regex" alongside its local filter (matches either).
+    * **Global Regex Filter:** Set a global keyword/regex pattern in the settings. By default it is applied alongside each rule's local filter (matches either). Enable "Use local only" in a rule to restrict that rule to its local filter only.
     * **Granular Content Control:** The "Text" filter is now split into "Text Messages" and "Media Captions," allowing you to forward media while stripping its caption, and vice-versa.
     * **Author Whitelisting:** Filter messages based on the author type (Users, Bots, Outgoing), or provide a specific, comma-separated list of User IDs or `@usernames` to exclusively forward messages *only* from them.
 
@@ -107,8 +107,8 @@ All features from the upstream v1.9.0 release are included, such as:
     * **Smart Tracking:** Persistent last-seen tracking prevents reprocessing of already-forwarded messages.
 
 * **🆕 Global Filtering (Fork Feature):**
-    * **Global Keyword/Regex Filter:** Set a global filter pattern in settings that can be applied to multiple rules.
-    * **Per-Rule Toggle:** Each rule can independently enable "use global regex" to apply the global filter alongside its local filter (matches either).
+    * **Global Keyword/Regex Filter:** Set a global filter pattern in settings that is applied to all rules by default (alongside their local filter).
+    * **Per-Rule Toggle:** Each rule can independently enable "Use local only" to omit the global filter for that specific rule.
 
 
 ## 🛠️ Installation
@@ -175,7 +175,7 @@ All global settings and a list of all active rules can be found by going to:
 - **Album Buffering Timeout (ms):** How long to wait to collect all media in an album.
 - **Sequential Delay (Seconds):** The pause between each message to guarantee order. Set to `0` to restore high-speed parallel mode (order not guaranteed).
 - **Deduplication Window (Seconds):** Time window to ignore duplicate notifications from the client.
-- **🆕 Global Keyword/Regex Filter (Fork Feature):** An optional filter that can be applied to multiple rules. Enable "use global regex" in each rule to apply this filter alongside the rule's local filter (matches either).
+- **🆕 Global Keyword/Regex Filter (Fork Feature):** An optional filter that is applied to all rules by default alongside their local filter. Enable "Use local only" in a specific rule to restrict that rule to its local filter only.
 
 ### Global Batch Actions (Fork Features):
 - **🆕 Fwd Unread (All Rules):** Processes unread messages for all configured rules at once.
@@ -189,7 +189,7 @@ When creating or editing a rule, you can configure:
 - Destination chat/channel/topic
 - Content type filters (text, photos, videos, documents, etc.)
 - Keyword/regex filter (local to this rule)
-- **🆕 Use Global Regex (Fork Feature):** Toggle to apply the global keyword filter alongside the local filter (matches either)
+- **🆕 Use Local Only (Fork Feature):** Toggle to restrict a rule to its local keyword filter only, omitting the global filter.
 - Author filtering (users, bots, outgoing messages)
 - Author whitelist (specific user IDs or @usernames)
 
@@ -221,6 +221,34 @@ This project is licensed under the **GNU General Public License v3.0**. See the 
 ---
 
 ## 📋 Changelog
+
+### v1.9.9.13 (Fork) - Global Destination Fallback & Edit-Dialog Fix
+
+**🐛 Bug Fix:**
+- **Destination field no longer shows a leading `-` when editing rules.** Channels and groups are stored internally with a negative ID; the edit dialog now shows the absolute (positive) value, matching what a user would normally enter.
+
+**🆕 New Feature — Global Destination Fallback:**
+- **Global destination setting** added to the main settings page under "Global destination (fallback)". Accepts a @username, invite link, or numeric chat ID — the same formats as a per-rule destination.
+- When a rule's local destination is left blank (or is set to 0), messages are forwarded to the global destination instead.
+- If neither a local nor a global destination is configured, forwarding is skipped (never silently dropped to an unknown chat).
+- The per-rule destination input field now shows a hint "(blank = use global)" when a global destination is already set.
+- Rules in the Active Rules list display "(global destination)" when their local destination is unset.
+
+**📝 Metadata Changes:**
+- Updated version to "1.9.9.13"
+
+---
+
+### v1.9.9.12 (Fork) - Local-Only Toggle & Never-Greedy Blank Fields
+
+**🆕 Changes:**
+- **Per-Rule "Use local only" checkbox:** Replaces the old "Match local OR global regex" checkbox. Local+global matching is now **always on by default** (no opt-in required). Enable "Use local only" on a rule to restrict it to its local keyword filter only (global pattern is ignored for that rule).
+- **Never-greedy blank field handling:** Blank keyword fields (local or global) are now explicitly treated as inactive. An empty field will never act as a catch-all regex that matches everything.
+
+**📝 Metadata Changes:**
+- Updated version to "1.9.9.12"
+
+---
 
 ### v1.9.9.11 (Fork) - Batch Processing & Enhanced Filtering
 

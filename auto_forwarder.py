@@ -85,7 +85,7 @@ __id__ = "auto_forwarder"
 __name__ = "Auto Fwd Fork"
 __description__ = "Sets up forwarding rules for any chat, including users, groups, and channels."
 __author__ = "@T3SL4,@cbkii"
-__version__ = "1.9.9.11"
+__version__ = "1.9.9.13"
 __min_version__ = "11.9.1"
 __icon__ = "msg_arrow_forward"
 
@@ -93,6 +93,7 @@ __icon__ = "msg_arrow_forward"
 FORWARDING_RULES_KEY = "forwarding_rules_v1337"
 LAST_SEEN_IDS_KEY = "last_seen_inbox_ids_v1337"
 GLOBAL_KEYWORD_PATTERN = "global_keyword_pattern_v1337"
+GLOBAL_DESTINATION = "global_destination_v1337"
 MIN_HISTORICAL_DAYS = 1
 MAX_HISTORICAL_DAYS = 30
 DEFAULT_SETTINGS = {
@@ -587,12 +588,12 @@ class AutoForwarderPlugin(BasePlugin):
 
         # Filter by keywords/regex (local and global)
         keyword_pattern = rule.get("keyword_pattern", "").strip()
-        use_global_regex = rule.get("use_global_regex", False)
+        use_local_only = rule.get("use_local_only", False)
         global_pattern = str(self.get_setting(GLOBAL_KEYWORD_PATTERN, "") or "").strip()
 
-        if keyword_pattern or use_global_regex:
+        if keyword_pattern or (not use_local_only and global_pattern):
             text_to_check = self._get_keyword_text_for_message(message_object)
-            if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
+            if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_local_only, global_pattern):
                 return
 
         self._send_forwarded_message(message_object, rule)
@@ -633,7 +634,10 @@ class AutoForwarderPlugin(BasePlugin):
         message = message_object.messageOwner
         if not message: return
         
-        to_peer_id = rule["destination"]
+        to_peer_id = self._get_effective_destination(rule)
+        if not to_peer_id:
+            log(f"[{self.id}] Skipping message: no local or global destination configured for rule.")
+            return
         drop_author = rule.get("drop_author", True)
         quote_replies = rule.get("quote_replies", True)
         topic_id = rule.get("destination_topic_id", 0)
@@ -707,17 +711,20 @@ class AutoForwarderPlugin(BasePlugin):
         """Constructs and sends a multi-media message (album)."""
         if not message_objects: return
         
-        to_peer_id = rule["destination"]
+        to_peer_id = self._get_effective_destination(rule)
+        if not to_peer_id:
+            log(f"[{self.id}] Skipping album: no local or global destination configured for rule.")
+            return
         drop_author = rule.get("drop_author", True)
         quote_replies = rule.get("quote_replies", True)
         filters = rule.get("filters", {})
         keyword_pattern = rule.get("keyword_pattern", "").strip()
-        use_global_regex = rule.get("use_global_regex", False)
+        use_local_only = rule.get("use_local_only", False)
         global_pattern = str(self.get_setting(GLOBAL_KEYWORD_PATTERN, "") or "").strip()
         topic_id = rule.get("destination_topic_id", 0)
 
         try:
-            if keyword_pattern or use_global_regex:
+            if keyword_pattern or (not use_local_only and global_pattern):
                 full_text_to_check = ""
                 for msg_obj in message_objects:
                     msg = msg_obj.messageOwner
@@ -727,7 +734,7 @@ class AutoForwarderPlugin(BasePlugin):
                         doc = getattr(msg.media, 'document', None)
                         filename = self._get_document_filename(doc)
                         if filename: full_text_to_check += f" {str(filename)}"
-                if not self._passes_combined_keyword_filter(full_text_to_check.strip(), keyword_pattern, use_global_regex, global_pattern): return
+                if not self._passes_combined_keyword_filter(full_text_to_check.strip(), keyword_pattern, use_local_only, global_pattern): return
 
             req = TLRPC.TL_messages_sendMultiMedia()
             req.peer = get_messages_controller().getInputPeer(to_peer_id)
@@ -984,12 +991,12 @@ class AutoForwarderPlugin(BasePlugin):
                 return False
 
             keyword_pattern = rule.get("keyword_pattern", "").strip()
-            use_global_regex = rule.get("use_global_regex", False)
+            use_local_only = rule.get("use_local_only", False)
             global_pattern = str(self.get_setting(GLOBAL_KEYWORD_PATTERN, "") or "").strip()
 
-            if keyword_pattern or use_global_regex:
+            if keyword_pattern or (not use_local_only and global_pattern):
                 text_to_check = self._get_keyword_text_for_message(message_obj)
-                if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
+                if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_local_only, global_pattern):
                     return False
 
             return True
@@ -1012,10 +1019,10 @@ class AutoForwarderPlugin(BasePlugin):
     def _build_processing_summary(self, messages, rule):
         """Builds summary stats and message objects for processing."""
         keyword_pattern = rule.get("keyword_pattern", "").strip()
-        use_global_regex = rule.get("use_global_regex", False)
+        use_local_only = rule.get("use_local_only", False)
         global_pattern = str(self.get_setting(GLOBAL_KEYWORD_PATTERN, "") or "").strip()
         local_active = bool(keyword_pattern)
-        global_active = bool(use_global_regex and global_pattern)
+        global_active = bool(not use_local_only and global_pattern)
 
         local_matches = 0
         global_matches = 0
@@ -1029,15 +1036,9 @@ class AutoForwarderPlugin(BasePlugin):
             if not self._passes_non_keyword_filters(msg_obj, rule):
                 continue
 
-            # Use `use_global_regex` (not `global_active`) so that enabling global
-            # filtering with an empty pattern still BLOCKS messages rather than
-            # allowing all through (never-greedy contract).
-            if local_active or use_global_regex:
+            if local_active or global_active:
                 text_to_check = self._get_keyword_text_for_message(msg_obj)
-                # Use _passes_combined_keyword_filter for the include/exclude
-                # decision to guarantee identical never-greedy semantics with
-                # the live path (global enabled with empty pattern → block ALL).
-                if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_global_regex, global_pattern):
+                if not self._passes_combined_keyword_filter(text_to_check, keyword_pattern, use_local_only, global_pattern):
                     continue
                 # Track per-filter match counts for summary display only.
                 local_match = local_active and self._passes_keyword_filter(text_to_check, keyword_pattern)
@@ -1236,28 +1237,31 @@ class AutoForwarderPlugin(BasePlugin):
         
         return None
 
-    def _passes_combined_keyword_filter(self, text_to_check, local_pattern, use_global, global_pattern):
-        """Checks if text passes local OR global regex filters."""
-        # If global filtering is enabled but no pattern has been configured yet,
-        # block the message – forwarding must never be greedy.
-        if use_global and not global_pattern:
-            return False
+    def _passes_combined_keyword_filter(self, text_to_check, local_pattern, use_local_only, global_pattern):
+        """Checks if text passes keyword/regex filters.
 
-        if not local_pattern and not (use_global and global_pattern):
+        Both local and global patterns are always considered unless *use_local_only*
+        is True, in which case the global pattern is ignored.  Blank (empty) fields
+        are never used for matching – they are treated as inactive to prevent
+        greedy / catch-all behaviour.
+        """
+        effective_local = (local_pattern or "").strip()
+        effective_global = "" if use_local_only else (global_pattern or "").strip()
+
+        # No active filter patterns → pass through (no keyword restriction).
+        if not effective_local and not effective_global:
             return True
-        
+
         if not text_to_check:
             return False
-        
-        if local_pattern:
-            if self._passes_keyword_filter(text_to_check, local_pattern):
-                return True
-        
-        if use_global and global_pattern:
-            if self._passes_keyword_filter(text_to_check, global_pattern):
-                return True
-        
-        # No active filter matched
+
+        if effective_local and self._passes_keyword_filter(text_to_check, effective_local):
+            return True
+
+        if effective_global and self._passes_keyword_filter(text_to_check, effective_global):
+            return True
+
+        # No active filter matched.
         return False
 
     # --- UI & Dialog Methods ---
@@ -1281,6 +1285,14 @@ class AutoForwarderPlugin(BasePlugin):
                 icon="msg_edit",
                 accent=True,
                 on_click=lambda v: self._show_global_regex_dialog()
+            ),
+            Divider(),
+            Header(text="Global destination (fallback)"),
+            Text(
+                text=self._get_global_destination_preview(),
+                icon="msg_arrow_forward",
+                accent=True,
+                on_click=lambda v: self._show_global_destination_dialog()
             ),
             Divider(),
             Header(text="Global Actions"),
@@ -1451,7 +1463,9 @@ class AutoForwarderPlugin(BasePlugin):
             set_by_reply_button.setLayoutParams(set_by_reply_params)
             main_layout.addView(set_by_reply_button)
     
-            input_field.setHint("Destination Link, @username, or ID")
+            global_dest_id = int(self.get_setting(GLOBAL_DESTINATION, 0) or 0)
+            dest_hint = "Destination Link, @username, or ID (blank = use global)" if global_dest_id else "Destination Link, @username, or ID"
+            input_field.setHint(dest_hint)
             input_field.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
             input_field.setHintTextColor(Theme.getColor(Theme.key_dialogTextHint))
             input_field_params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -1472,12 +1486,12 @@ class AutoForwarderPlugin(BasePlugin):
             checkbox_params = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
             checkbox_params.setMargins(margin_px, 0, margin_px, 0)
             
-            use_global_regex_checkbox = CheckBox(activity)
-            use_global_regex_checkbox.setText("Match local OR global regex")
-            use_global_regex_checkbox.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
-            use_global_regex_checkbox.setButtonTintList(checkbox_tint_list)
-            use_global_regex_checkbox.setLayoutParams(checkbox_params)
-            main_layout.addView(use_global_regex_checkbox)
+            use_local_only_checkbox = CheckBox(activity)
+            use_local_only_checkbox.setText("Use local only")
+            use_local_only_checkbox.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
+            use_local_only_checkbox.setButtonTintList(checkbox_tint_list)
+            use_local_only_checkbox.setLayoutParams(checkbox_params)
+            main_layout.addView(use_local_only_checkbox)
     
             drop_author_checkbox = CheckBox(activity)
             drop_author_checkbox.setText("Remove Original Author (Copy)")
@@ -1565,7 +1579,11 @@ class AutoForwarderPlugin(BasePlugin):
     
             if existing_rule:
                 dest_entity = self._get_chat_entity(existing_rule.get("destination", 0))
-                input_field.setText(f"@{dest_entity.username}" if dest_entity and hasattr(dest_entity, 'username') and dest_entity.username else str(existing_rule.get("destination", 0)))
+                stored_dest_id = existing_rule.get("destination", 0)
+                if dest_entity and hasattr(dest_entity, 'username') and dest_entity.username:
+                    input_field.setText(f"@{dest_entity.username}")
+                elif stored_dest_id:
+                    input_field.setText(str(abs(stored_dest_id)))
     
                 existing_topic_id = existing_rule.get("destination_topic_id", 0)
                 if existing_topic_id > 0:
@@ -1574,7 +1592,7 @@ class AutoForwarderPlugin(BasePlugin):
                     topic_id_input.setText(str(existing_topic_id))
     
                 keyword_filter_input.setText(existing_rule.get("keyword_pattern", "")); author_filter_input.setText(existing_rule.get("author_filter", ""))
-                use_global_regex_checkbox.setChecked(existing_rule.get("use_global_regex", False))
+                use_local_only_checkbox.setChecked(existing_rule.get("use_local_only", False))
                 drop_author_checkbox.setChecked(existing_rule.get("drop_author", True)); quote_replies_checkbox.setChecked(existing_rule.get("quote_replies", True))
                 forward_users_checkbox.setChecked(existing_rule.get("forward_users", True)); forward_bots_checkbox.setChecked(existing_rule.get("forward_bots", True))
                 forward_outgoing_checkbox.setChecked(existing_rule.get("forward_outgoing", True))
@@ -1595,7 +1613,7 @@ class AutoForwarderPlugin(BasePlugin):
                 self._process_destination_input(
                     source_id, source_name, input_field.getText().toString(),
                     keyword_filter_input.getText().toString(), author_filter_input.getText().toString(),
-                    use_global_regex_checkbox.isChecked(),
+                    use_local_only_checkbox.isChecked(),
                     drop_author_checkbox.isChecked(), quote_replies_checkbox.isChecked(),
                     forward_to_topic_checkbox.isChecked(), topic_id,
                     forward_users_checkbox.isChecked(), forward_bots_checkbox.isChecked(),
@@ -1607,7 +1625,7 @@ class AutoForwarderPlugin(BasePlugin):
     
             all_ui_elements = {
                 'input_field': input_field, 'keyword_filter_input': keyword_filter_input,
-                'use_global_regex_checkbox': use_global_regex_checkbox,
+                'use_local_only_checkbox': use_local_only_checkbox,
                 'drop_author_checkbox': drop_author_checkbox, 'quote_replies_checkbox': quote_replies_checkbox,
                 'forward_to_topic_checkbox': forward_to_topic_checkbox, 'topic_id_input': topic_id_input,
                 'author_filter_input': author_filter_input, 'forward_users_checkbox': forward_users_checkbox,
@@ -1631,7 +1649,7 @@ class AutoForwarderPlugin(BasePlugin):
             rule_settings = {
                 "keyword_pattern": ui_elements['keyword_filter_input'].getText().toString(),
                 "author_filter": ui_elements['author_filter_input'].getText().toString(),
-                "use_global_regex": ui_elements['use_global_regex_checkbox'].isChecked(),
+                "use_local_only": ui_elements['use_local_only_checkbox'].isChecked(),
                 "drop_author": ui_elements['drop_author_checkbox'].isChecked(),
                 "quote_replies": ui_elements['quote_replies_checkbox'].isChecked(),
                 "forward_to_topic": ui_elements['forward_to_topic_checkbox'].isChecked(),
@@ -1736,20 +1754,25 @@ class AutoForwarderPlugin(BasePlugin):
     # --- Rule Processing and Resolution ---
     def _process_destination_input(self, source_id, source_name, user_input, *args):
         """Processes the destination provided manually in the settings dialog."""
-        (keyword_pattern, author_filter, use_global_regex, drop_author, quote_replies, forward_to_topic, 
+        (keyword_pattern, author_filter, use_local_only, drop_author, quote_replies, forward_to_topic, 
          topic_id, forward_users, forward_bots, forward_outgoing, filter_settings) = args
 
-        cleaned_input = (user_input or "").strip()
-        if not cleaned_input: 
-            BulletinHelper.show_error("Destination cannot be empty.")
-            return
-
         rule_settings = {
-            "keyword_pattern": keyword_pattern, "author_filter": author_filter, "use_global_regex": use_global_regex,
+            "keyword_pattern": keyword_pattern, "author_filter": author_filter, "use_local_only": use_local_only,
             "drop_author": drop_author, "quote_replies": quote_replies, "forward_to_topic": forward_to_topic, 
             "destination_topic_id": topic_id, "forward_users": forward_users, "forward_bots": forward_bots, 
             "forward_outgoing": forward_outgoing, "filter_settings": filter_settings
         }
+
+        cleaned_input = (user_input or "").strip()
+        if not cleaned_input:
+            global_dest = int(self.get_setting(GLOBAL_DESTINATION, 0) or 0)
+            if not global_dest:
+                BulletinHelper.show_error("Destination cannot be empty. Set a global destination in settings first.")
+                return
+            # No local destination — rule will use the global destination at runtime.
+            self._finalize_rule(source_id, source_name, 0, "(global destination)", rule_settings)
+            return
 
         if "/joinchat/" in cleaned_input or "/+" in cleaned_input:
             self._resolve_as_invite_link(cleaned_input, source_id, source_name, rule_settings)
@@ -1850,9 +1873,12 @@ class AutoForwarderPlugin(BasePlugin):
     def _finalize_rule(self, source_id, source_name, destination_id, dest_name, rule_settings):
         """Saves the final, resolved rule to storage and notifies the user."""
         if destination_id == 0:
-            log(f"[{self.id}] Finalize rule called with invalid destination_id=0. Aborting.")
-            BulletinHelper.show_error("Failed to save rule: Invalid destination chat resolved.", get_last_fragment())
-            return
+            # destination_id of 0 is allowed: the rule will fall back to the global destination at runtime.
+            global_dest = int(self.get_setting(GLOBAL_DESTINATION, 0) or 0)
+            if not global_dest:
+                log(f"[{self.id}] Finalize rule called with destination_id=0 and no global destination. Aborting.")
+                BulletinHelper.show_error("Failed to save rule: No destination set and no global destination configured.", get_last_fragment())
+                return
     
         topic_id = rule_settings.get("destination_topic_id", 0)
     
@@ -1863,7 +1889,7 @@ class AutoForwarderPlugin(BasePlugin):
             "quote_replies": rule_settings["quote_replies"],
             "destination_topic_id": topic_id,
             "keyword_pattern": rule_settings["keyword_pattern"],
-            "use_global_regex": rule_settings.get("use_global_regex", False),
+            "use_local_only": rule_settings.get("use_local_only", False),
             "author_filter": rule_settings["author_filter"],
             "forward_users": rule_settings["forward_users"],
             "forward_bots": rule_settings["forward_bots"],
@@ -2245,6 +2271,174 @@ class AutoForwarderPlugin(BasePlugin):
         builder.set_negative_button("Cancel", None)
         run_on_ui_thread(builder.show)
 
+    # --- Global Destination (Fallback) ---
+    def _get_effective_destination(self, rule):
+        """Returns the effective destination ID for a rule.
+
+        If the rule has a local destination set (non-zero) it is used.
+        Otherwise the globally configured fallback destination is returned.
+        Returns 0 when neither is configured.
+        """
+        dest = rule.get("destination", 0)
+        if dest:
+            return dest
+        return int(self.get_setting(GLOBAL_DESTINATION, 0) or 0)
+
+    def _get_global_destination_preview(self):
+        """Returns a display string for the global destination setting."""
+        dest_id = int(self.get_setting(GLOBAL_DESTINATION, 0) or 0)
+        if not dest_id:
+            return "Tap to set a global fallback destination."
+        name = self._get_chat_name(dest_id)
+        display_id = abs(dest_id)
+        return f"→ {name} (ID: {display_id})" if name and name != f"ID: {getattr(self._get_chat_entity(dest_id), 'id', display_id)}" else f"→ ID: {display_id}"
+
+    def _show_global_destination_dialog(self):
+        """Shows a dialog for editing the global fallback destination."""
+        activity = get_last_fragment().getParentActivity()
+        if not activity: return
+        builder = AlertDialogBuilder(activity)
+        builder.set_title("Global Destination (Fallback)")
+        margin_dp = 20
+        margin_px = int(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, margin_dp, activity.getResources().getDisplayMetrics()))
+
+        # Pre-populate with the current destination (username or positive ID).
+        current_dest_id = int(self.get_setting(GLOBAL_DESTINATION, 0) or 0)
+        current_display = ""
+        if current_dest_id:
+            dest_entity = self._get_chat_entity(current_dest_id)
+            if dest_entity and hasattr(dest_entity, 'username') and dest_entity.username:
+                current_display = f"@{dest_entity.username}"
+            else:
+                current_display = str(abs(current_dest_id))
+
+        input_field = EditText(activity)
+        input_field.setHint("@username, link, or ID (blank to clear)")
+        input_field.setTextColor(Theme.getColor(Theme.key_dialogTextBlack))
+        input_field.setHintTextColor(Theme.getColor(Theme.key_dialogTextHint))
+        input_field.setText(current_display)
+
+        container = FrameLayout(activity)
+        params = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+        params.setMargins(margin_px, margin_px // 2, margin_px, margin_px // 2)
+        input_field.setLayoutParams(params)
+        container.addView(input_field)
+
+        def on_save(button, which):
+            user_input = input_field.getText().toString().strip()
+            if not user_input:
+                self.set_setting(GLOBAL_DESTINATION, "0")
+                self._refresh_settings_ui()
+                BulletinHelper.show_info("Global destination cleared.", get_last_fragment())
+                return
+            self._resolve_global_destination_input(user_input)
+
+        builder.set_view(container)
+        builder.set_positive_button("Save", on_save)
+        builder.set_negative_button("Cancel", None)
+        run_on_ui_thread(builder.show)
+
+    def _resolve_global_destination_input(self, user_input):
+        """Resolves a user-supplied string and saves it as the global destination."""
+        cleaned = user_input.strip()
+        if not cleaned:
+            self.set_setting(GLOBAL_DESTINATION, "0")
+            self._refresh_settings_ui()
+            return
+
+        if "/joinchat/" in cleaned or "/+" in cleaned:
+            self._resolve_global_as_invite_link(cleaned)
+            return
+
+        try:
+            input_as_int = int(cleaned)
+            cached_entity = self._get_chat_entity_from_input_id(input_as_int)
+            if cached_entity:
+                self._save_global_destination(self._get_id_for_storage(cached_entity), self._get_entity_name(cached_entity))
+                return
+            self._resolve_global_by_id(input_as_int)
+        except ValueError:
+            self._resolve_global_as_username(cleaned)
+
+    def _save_global_destination(self, dest_id, dest_name):
+        """Persists the global destination and refreshes the settings UI."""
+        self.set_setting(GLOBAL_DESTINATION, str(dest_id))
+        self._refresh_settings_ui()
+        BulletinHelper.show_info(f"Global destination set: '{dest_name}'", get_last_fragment())
+
+    def _resolve_global_as_invite_link(self, cleaned_input):
+        """Resolves a joinchat/+ invite link for the global destination."""
+        try:
+            hash_val = cleaned_input.split("/")[-1]
+            req = TLRPC.TL_messages_checkChatInvite()
+            req.hash = hash_val
+
+            def on_result(response, error):
+                if error or not response or not hasattr(response, 'chat'):
+                    error_text = getattr(error, 'text', 'Invalid or expired link')
+                    BulletinHelper.show_error(f"Failed to resolve link: {error_text}", get_last_fragment())
+                    return
+                dest_entity = response.chat
+                if dest_entity:
+                    get_messages_controller().putChat(dest_entity, False)
+                    self._save_global_destination(self._get_id_for_storage(dest_entity), self._get_entity_name(dest_entity))
+
+            send_request(req, RequestCallback(on_result))
+        except Exception:
+            log(f"[{self.id}] ERROR resolving invite link for global dest: {traceback.format_exc()}")
+
+    def _resolve_global_by_id(self, input_as_int):
+        """Resolves a numeric ID (not in local cache) for the global destination."""
+        def on_result(response, error):
+            if error or not response or not hasattr(response, 'chats') or response.chats.isEmpty():
+                error_text = getattr(error, 'text', 'Not found')
+                BulletinHelper.show_error(f"Could not find chat by ID: {input_as_int}. Reason: {error_text}", get_last_fragment())
+                return
+            dest_entity = response.chats.get(0)
+            if dest_entity:
+                get_messages_controller().putChat(dest_entity, True)
+                self._save_global_destination(self._get_id_for_storage(dest_entity), self._get_entity_name(dest_entity))
+            else:
+                BulletinHelper.show_error(f"Could not find chat by ID: {input_as_int}", get_last_fragment())
+
+        req = TLRPC.TL_messages_getChats()
+        id_list = ArrayList()
+        possible_ids = HashSet()
+        sanitized_short_id = self._sanitize_chat_id_for_request(input_as_int)
+        possible_ids.add(sanitized_short_id)
+        possible_ids.add(-sanitized_short_id)
+        possible_ids.add(abs(input_as_int))
+        possible_ids.add(-abs(input_as_int))
+        id_list.addAll(possible_ids)
+        req.id = id_list
+        send_request(req, RequestCallback(on_result))
+
+    def _resolve_global_as_username(self, username):
+        """Resolves a @username or public t.me link for the global destination."""
+        def on_result(response, error):
+            if error or not response:
+                error_text = getattr(error, 'text', 'Not found')
+                BulletinHelper.show_error(f"Could not resolve '{username}': {error_text}", get_last_fragment())
+                return
+            dest_entity = None
+            if hasattr(response, 'chats') and response.chats and not response.chats.isEmpty():
+                dest_entity = response.chats.get(0)
+                get_messages_controller().putChats(response.chats, False)
+            elif hasattr(response, 'users') and response.users and not response.users.isEmpty():
+                dest_entity = response.users.get(0)
+                get_messages_controller().putUsers(response.users, False)
+            if dest_entity:
+                self._save_global_destination(self._get_id_for_storage(dest_entity), self._get_entity_name(dest_entity))
+            else:
+                BulletinHelper.show_error(f"Could not resolve '{username}'.", get_last_fragment())
+
+        try:
+            req = TLRPC.TL_contacts_resolveUsername()
+            req.username = username.replace("@", "").split("/")[-1]
+            send_request(req, RequestCallback(on_result))
+        except Exception:
+            log(f"[{self.id}] ERROR resolving username for global dest: {traceback.format_exc()}")
+
     def _show_active_rules_dialog(self):
         """Shows a scrollable list of active forwarding rules."""
         def prepare_rules():
@@ -2255,7 +2449,13 @@ class AutoForwarderPlugin(BasePlugin):
                 rules_data = []
                 for source_id, rule_data in sorted_rules:
                     source_name = self._get_chat_name(source_id)
-                    dest_name = self._get_chat_name(rule_data.get("destination", 0)) if rule_data.get("destination") else "Not Set"
+                    local_dest = rule_data.get("destination", 0)
+                    if local_dest:
+                        dest_name = self._get_chat_name(local_dest)
+                    elif int(self.get_setting(GLOBAL_DESTINATION, 0) or 0):
+                        dest_name = "(global destination)"
+                    else:
+                        dest_name = "⚠ No destination set"
                     drop_author = rule_data.get("drop_author", True)
                     rules_data.append({
                         "source_id": source_id,
