@@ -85,7 +85,7 @@ __id__ = "auto_forwarder"
 __name__ = "Auto Fwd Fork"
 __description__ = "Sets up forwarding rules for any chat, including users, groups, and channels."
 __author__ = "@T3SL4,@cbkii"
-__version__ = "1.9.9.13"
+__version__ = "1.9.9.14"
 __min_version__ = "11.9.1"
 __icon__ = "msg_arrow_forward"
 
@@ -211,9 +211,10 @@ class AutoForwarderPlugin(BasePlugin):
     PROCESSED_FILES_CACHE_SIZE = 200
     GITHUB_OWNER = "cbkii"
     GITHUB_REPO = "Auto-Forwarder-Plugin"
-    UPDATE_RAW_URL = "https://raw.githubusercontent.com/cbkii/Auto-Forwarder-Plugin/main/auto_forwarder.py"
+    RELEASES_API_URL = "https://api.github.com/repos/cbkii/Auto-Forwarder-Plugin/releases/latest"
     UPDATE_DOWNLOAD_FILENAME = "auto_forwarder.plugin"
     UPDATE_INTERVAL_SECONDS = 6 * 60 * 60
+    FORWARDED_MSG_IDS_MAX_SIZE = 2000
 
     # --- Nested Proxy Classes ---
     class InstallCallback(dynamic_proxy(Utilities.Callback)):
@@ -252,6 +253,7 @@ class AutoForwarderPlugin(BasePlugin):
         self.deferred_messages = {}
         self.album_buffer = {}
         self.processed_keys = collections.deque(maxlen=200)
+        self._forwarded_msg_ids = collections.OrderedDict()
         self.handler = Handler(Looper.getMainLooper())
         self.user_last_message_time = collections.OrderedDict()
         self.processed_files_cache = collections.OrderedDict()
@@ -633,7 +635,17 @@ class AutoForwarderPlugin(BasePlugin):
         """Constructs and sends a single forwarded/copied message."""
         message = message_object.messageOwner
         if not message: return
-        
+
+        source_chat_id = self._get_id_from_peer(message.peer_id)
+        fwd_key = (source_chat_id, message.id)
+        with self.lock:
+            if fwd_key in self._forwarded_msg_ids:
+                log(f"[{self.id}] Skipping already-forwarded message {fwd_key}")
+                return
+            self._forwarded_msg_ids[fwd_key] = None
+            if len(self._forwarded_msg_ids) > self.FORWARDED_MSG_IDS_MAX_SIZE:
+                self._forwarded_msg_ids.popitem(last=False)
+
         to_peer_id = self._get_effective_destination(rule)
         if not to_peer_id:
             log(f"[{self.id}] Skipping message: no local or global destination configured for rule.")
@@ -710,7 +722,22 @@ class AutoForwarderPlugin(BasePlugin):
     def _send_album(self, message_objects, rule):
         """Constructs and sends a multi-media message (album)."""
         if not message_objects: return
-        
+
+        first_message = message_objects[0].messageOwner
+        source_chat_id = self._get_id_from_peer(first_message.peer_id)
+        with self.lock:
+            # Albums are atomic units — if the first message was already forwarded
+            # the whole album was processed; skip to prevent duplicates.
+            first_key = (source_chat_id, first_message.id)
+            if first_key in self._forwarded_msg_ids:
+                log(f"[{self.id}] Skipping already-forwarded album (first msg key: {first_key})")
+                return
+            for msg_obj in message_objects:
+                self._forwarded_msg_ids[(source_chat_id, msg_obj.messageOwner.id)] = None
+            # Evict oldest entries once after adding all album messages
+            while len(self._forwarded_msg_ids) > self.FORWARDED_MSG_IDS_MAX_SIZE:
+                self._forwarded_msg_ids.popitem(last=False)
+
         to_peer_id = self._get_effective_destination(rule)
         if not to_peer_id:
             log(f"[{self.id}] Skipping album: no local or global destination configured for rule.")
@@ -2693,29 +2720,45 @@ class AutoForwarderPlugin(BasePlugin):
         threading.Thread(target=self._perform_update_check, args=[is_manual]).start()
 
     def _perform_update_check(self, is_manual):
-        """Checks the repository source file for the latest version."""
+        """Checks the GitHub Releases API for the latest plugin version."""
         try:
-            connection = URL(self.UPDATE_RAW_URL).openConnection()
+            connection = URL(self.RELEASES_API_URL).openConnection()
             connection.setRequestMethod("GET")
+            connection.setRequestProperty("Accept", "application/vnd.github+json")
+            connection.setRequestProperty("User-Agent", f"Auto-Forwarder-Plugin/{__version__}")
             connection.connect()
             if connection.getResponseCode() == HttpURLConnection.HTTP_OK:
                 stream = connection.getInputStream()
                 scanner = Scanner(stream, "UTF-8").useDelimiter("\\A")
                 response_str = scanner.next() if scanner.hasNext() else ""
                 scanner.close()
-                latest_version_tag = self._extract_version_from_source(response_str)
-                if not latest_version_tag:
+
+                release_data = json.loads(response_str)
+                latest_tag = release_data.get("tag_name", "").lstrip("v")
+                if not latest_tag:
                     if is_manual:
-                        BulletinHelper.show_error("Unable to read version from repository source.", get_last_fragment())
+                        BulletinHelper.show_error("Unable to read version from latest release.", get_last_fragment())
                     return
 
+                asset_url = None
+                for asset in release_data.get("assets", []):
+                    if asset.get("name", "").endswith(".plugin"):
+                        asset_url = asset.get("browser_download_url")
+                        break
+
+                if not asset_url:
+                    if is_manual:
+                        BulletinHelper.show_error("No plugin asset found in latest release.", get_last_fragment())
+                    return
+
+                changelog = (release_data.get("body") or "").strip() or "Update available."
+
                 current_version = __version__.split('-')[0]
-                latest_v_tuple = tuple(map(int, latest_version_tag.split('.')))
+                latest_v_tuple = tuple(map(int, latest_tag.split('.')))
                 current_v_tuple = tuple(map(int, current_version.split('.')))
 
                 if latest_v_tuple > current_v_tuple:
-                    changelog = "Update available from the repository."
-                    run_on_ui_thread(lambda: self._show_update_dialog(latest_version_tag, changelog, self.UPDATE_RAW_URL))
+                    run_on_ui_thread(lambda: self._show_update_dialog(latest_tag, changelog, asset_url))
                 elif is_manual:
                     BulletinHelper.show_info("You are on the latest version!", get_last_fragment())
             elif is_manual:
